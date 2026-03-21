@@ -30,10 +30,18 @@ export interface Project {
   description: string;
   budget: bigint;
   deadline: bigint;
+  client: string;
   developer: string;
   status: ProjectStatus;
   milestoneCount: bigint;
   approvedCount: bigint;
+}
+
+export interface ProjectPayments {
+  totalBudget: bigint;
+  clientFunded: bigint;
+  paidToDev: bigint;
+  remaining: bigint;
 }
 
 export interface Milestone {

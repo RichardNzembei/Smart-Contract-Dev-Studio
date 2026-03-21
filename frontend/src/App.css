@@ -121,6 +121,13 @@ body {
   background: var(--green);
 }
 
+.wallet-balance {
+  color: var(--text);
+  border-left: 1px solid var(--border);
+  padding-left: 8px;
+  margin-left: 2px;
+}
+
 .connect-btn {
   padding: 6px 16px;
   border: 1px solid var(--accent);
@@ -602,6 +609,26 @@ body {
   flex: 1;
 }
 
+select {
+  padding: 8px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+}
+
+select:focus {
+  border-color: var(--accent);
+}
+
+select option {
+  background: var(--bg-panel);
+  color: var(--text);
+}
+
 input, textarea {
   padding: 8px 12px;
   background: var(--bg);
@@ -780,6 +807,193 @@ textarea {
   text-align: center;
   color: var(--text-muted);
   font-size: 13px;
+}
+
+/* ──────────────────── Toast Notifications ──────────────────── */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 500;
+  padding: 12px 18px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 500;
+  background: #1e2130;
+  color: var(--text);
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  max-width: 320px;
+  animation: toast-in 0.2s ease;
+}
+
+.toast-error {
+  background: #1e1215;
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.toast-success {
+  background: #121e16;
+  border-color: var(--green);
+  color: var(--green);
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ──────────────────── Dashboards ──────────────────── */
+.dashboard {
+  height: calc(100vh - 53px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.dashboard-summary {
+  display: flex;
+  gap: 10px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+  flex-shrink: 0;
+}
+
+.stat-card {
+  padding: 10px 16px;
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  flex: 1;
+  min-width: 0;
+}
+
+.stat-card label {
+  display: block;
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 2px;
+}
+
+.stat-value {
+  font-size: 16px;
+  font-weight: 700;
+  display: block;
+}
+
+.dashboard-content {
+  display: grid;
+  grid-template-columns: 380px 1fr;
+  flex: 1;
+  overflow: hidden;
+}
+
+.dashboard-left {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+}
+
+.dashboard-right {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+/* Developer profile strip */
+.dev-profile {
+  flex-wrap: wrap;
+}
+
+/* Wallet badge enhancements */
+.wallet-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.wallet-role-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+}
+
+.wallet-addr {
+  font-size: 12px;
+  font-family: monospace;
+  color: var(--text-muted);
+}
+
+/* Funding progress bar */
+.funding-bar-wrap {
+  margin-top: 6px;
+  position: relative;
+  height: 18px;
+  background: var(--bg-hover);
+  border-radius: 9px;
+  overflow: hidden;
+}
+
+.funding-bar {
+  height: 100%;
+  background: var(--blue);
+  border-radius: 9px;
+  transition: width 0.3s;
+  opacity: 0.7;
+}
+
+.funding-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* Payment flow section */
+.payment-flow {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.payment-flow h3 {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+/* ──────────────────── Responsive ──────────────────── */
+@media (max-width: 768px) {
+  .main-layout {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+
+  .left-column {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    overflow-y: visible;
+  }
+
+  .header {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .info-cards {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ──────────────────── Scrollbar ──────────────────── */

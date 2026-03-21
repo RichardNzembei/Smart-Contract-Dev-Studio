@@ -1,12 +1,20 @@
 import { useState, useEffect, useCallback } from "react";
 import { ethers } from "ethers";
-import type { Project, Milestone, Role } from "../config/types";
+import type { Project, Milestone, Role, ProjectPayments } from "../config/types";
 import { ProjectStatus, MilestoneStatus } from "../config/types";
+
+interface DevDisplay {
+  wallet: string;
+  name: string;
+  avgRating: number;
+  ratingCount: number;
+}
 
 interface Props {
   projectId: bigint;
   role: Role;
   account: string;
+  knownDevs: DevDisplay[];
   getProject: (id: bigint) => Promise<Project>;
   getMilestone: (projectId: bigint, index: bigint) => Promise<Milestone>;
   submitMilestone: (projectId: bigint, index: bigint) => Promise<void>;
@@ -16,6 +24,10 @@ interface Props {
   rateDeveloper: (projectId: bigint, rating: number) => Promise<void>;
   assignDeveloper: (projectId: bigint, devAddress: string) => Promise<void>;
   addMilestone: (projectId: bigint, title: string, value: bigint, deadline: bigint) => Promise<void>;
+  fundProject: (projectId: bigint, amountWei: bigint) => Promise<void>;
+  getProjectPayments: (projectId: bigint) => Promise<ProjectPayments>;
+  cancelProject: (projectId: bigint) => Promise<void>;
+  withdrawUnclaimable: (projectId: bigint) => Promise<void>;
   onRefresh: () => void;
   refreshKey: number;
 }
@@ -38,6 +50,7 @@ export function ProjectDetail({
   projectId,
   role,
   account,
+  knownDevs,
   getProject,
   getMilestone,
   submitMilestone,
@@ -47,6 +60,10 @@ export function ProjectDetail({
   rateDeveloper,
   assignDeveloper,
   addMilestone,
+  fundProject,
+  getProjectPayments,
+  cancelProject,
+  withdrawUnclaimable,
   onRefresh,
   refreshKey,
 }: Props) {
@@ -60,6 +77,14 @@ export function ProjectDetail({
   const [msTitle, setMsTitle] = useState("");
   const [msValue, setMsValue] = useState("");
   const [msDays, setMsDays] = useState("30");
+  const [payments, setPayments] = useState<ProjectPayments | null>(null);
+  const [fundAmount, setFundAmount] = useState("");
+  const [toast, setToast] = useState<{ message: string; type: "error" | "success" } | null>(null);
+
+  const showToast = (message: string, type: "error" | "success") => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 4000);
+  };
 
   const load = useCallback(async () => {
     try {
@@ -71,12 +96,16 @@ export function ProjectDetail({
         ms.push(await getMilestone(projectId, i));
       }
       setMilestones(ms);
+      try {
+        const pay = await getProjectPayments(projectId);
+        setPayments(pay);
+      } catch { /* getProjectPayments may not exist on older contracts */ }
     } catch (err) {
       console.error("Failed to load project:", err);
     } finally {
       setLoading(false);
     }
-  }, [projectId, getProject, getMilestone]);
+  }, [projectId, getProject, getMilestone, getProjectPayments]);
 
   useEffect(() => {
     load();
@@ -86,10 +115,11 @@ export function ProjectDetail({
     setActionLoading(label);
     try {
       await fn();
+      showToast("Transaction confirmed", "success");
       await load();
       onRefresh();
     } catch (err: any) {
-      alert(err.message || "Transaction failed");
+      showToast(err.message || "Transaction failed", "error");
     } finally {
       setActionLoading(null);
     }
@@ -108,6 +138,10 @@ export function ProjectDetail({
   const hasNoDev = project.developer === ethers.ZeroAddress;
 
   return (
+    <>
+    {toast && (
+      <div className={`toast toast-${toast.type}`}>{toast.message}</div>
+    )}
     <div className="panel detail-panel">
       <div className="panel-header">
         <h2>{project.title}</h2>
@@ -128,7 +162,14 @@ export function ProjectDetail({
           </div>
           <div className="detail-item">
             <label>Developer</label>
-            <span>{hasNoDev ? "Unassigned" : project.developer.slice(0, 6) + "..." + project.developer.slice(-4)}</span>
+            <span>{hasNoDev ? "Unassigned" : (() => {
+              const dev = knownDevs.find(d => d.wallet.toLowerCase() === project.developer.toLowerCase());
+              return dev ? `${dev.name} (${project.developer.slice(0, 6)}...${project.developer.slice(-4)})` : project.developer.slice(0, 6) + "..." + project.developer.slice(-4);
+            })()}</span>
+          </div>
+          <div className="detail-item">
+            <label>Client</label>
+            <span>{project.client === ethers.ZeroAddress ? "No client yet" : project.client.slice(0, 6) + "..." + project.client.slice(-4)}</span>
           </div>
           <div className="detail-item">
             <label>Milestones</label>
@@ -136,17 +177,88 @@ export function ProjectDetail({
           </div>
         </div>
 
+        {/* Payment Ledger */}
+        {payments && (
+          <div className="action-section">
+            <h3>Payment Flow</h3>
+            <div className="detail-grid">
+              <div className="detail-item">
+                <label>Studio Funded</label>
+                <span>{ethers.formatEther(payments.totalBudget - payments.clientFunded)} ETH</span>
+              </div>
+              <div className="detail-item">
+                <label>Client Funded</label>
+                <span style={{ color: payments.clientFunded > 0n ? "var(--blue)" : "var(--text-muted)" }}>
+                  {ethers.formatEther(payments.clientFunded)} ETH
+                </span>
+              </div>
+              <div className="detail-item">
+                <label>Paid to Dev</label>
+                <span style={{ color: payments.paidToDev > 0n ? "var(--green)" : "var(--text-muted)" }}>
+                  {ethers.formatEther(payments.paidToDev)} ETH
+                </span>
+              </div>
+              <div className="detail-item">
+                <label>Remaining in Contract</label>
+                <span style={{ color: payments.remaining > 0n ? "var(--yellow)" : "var(--text-muted)" }}>
+                  {ethers.formatEther(payments.remaining)} ETH
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Client: Fund Project */}
+        {role === "client" && isActive && (
+          <div className="action-section">
+            <h3>Fund This Project</h3>
+            <div className="inline-form">
+              <input
+                type="text"
+                placeholder="Amount in ETH"
+                value={fundAmount}
+                onChange={(e) => setFundAmount(e.target.value)}
+              />
+              <button
+                className="btn btn-primary"
+                disabled={!!actionLoading || !fundAmount}
+                onClick={() => handleAction("fund", async () => {
+                  await fundProject(projectId, ethers.parseEther(fundAmount));
+                  setFundAmount("");
+                })}
+              >
+                {actionLoading === "fund" ? "Funding..." : "Fund Project"}
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Studio: Assign developer */}
         {isStudio && isActive && hasNoDev && (
           <div className="action-section">
             <h3>Assign Developer</h3>
             <div className="inline-form">
-              <input
-                type="text"
-                placeholder="Developer address (0x...)"
-                value={devAddress}
-                onChange={(e) => setDevAddress(e.target.value)}
-              />
+              {knownDevs.length > 0 ? (
+                <select
+                  value={devAddress}
+                  onChange={(e) => setDevAddress(e.target.value)}
+                  style={{ flex: 1, padding: "8px 12px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius)", color: "var(--text)", fontSize: "13px" }}
+                >
+                  <option value="">Select a developer...</option>
+                  {knownDevs.map((d) => (
+                    <option key={d.wallet} value={d.wallet}>
+                      {d.name} ({d.wallet.slice(0, 6)}...{d.wallet.slice(-4)}) — {d.avgRating}/5
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  placeholder="Developer address (0x...)"
+                  value={devAddress}
+                  onChange={(e) => setDevAddress(e.target.value)}
+                />
+              )}
               <button
                 className="btn btn-primary"
                 disabled={!!actionLoading || !devAddress}
@@ -241,9 +353,19 @@ export function ProjectDetail({
           )}
         </div>
 
-        {/* Dispute actions */}
+        {/* Dispute & Cancel actions */}
         {isActive && (isStudio || (isDev && isAssignedDev)) && (
           <div className="action-section dispute-section">
+            {isStudio && project.approvedCount === 0n && (
+              <button
+                className="btn btn-outline btn-sm"
+                disabled={!!actionLoading}
+                onClick={() => handleAction("cancel", () => cancelProject(projectId))}
+                style={{ marginRight: 8 }}
+              >
+                {actionLoading === "cancel" ? "Cancelling..." : "Cancel Project"}
+              </button>
+            )}
             <button
               className="btn btn-danger btn-sm"
               disabled={!!actionLoading}
@@ -277,6 +399,19 @@ export function ProjectDetail({
           </div>
         )}
 
+        {/* Withdraw unclaimable funds (studio, completed/cancelled with remaining funds) */}
+        {isStudio && (isCompleted || project.status === ProjectStatus.Cancelled) && project.approvedCount < project.milestoneCount && (
+          <div className="action-section">
+            <button
+              className="btn btn-outline btn-sm"
+              disabled={!!actionLoading}
+              onClick={() => handleAction("withdraw", () => withdrawUnclaimable(projectId))}
+            >
+              {actionLoading === "withdraw" ? "Withdrawing..." : "Withdraw Locked Funds"}
+            </button>
+          </div>
+        )}
+
         {/* Rate developer (studio, completed project) */}
         {isStudio && isCompleted && !hasNoDev && (
           <div className="action-section">
@@ -305,5 +440,6 @@ export function ProjectDetail({
         )}
       </div>
     </div>
+    </>
   );
 }

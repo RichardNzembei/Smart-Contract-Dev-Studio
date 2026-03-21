@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { ethers } from "ethers";
 import { CONTRACT_ADDRESS, DEVSTUDIO_ABI, RPC_URL } from "../config/contract";
-import type { Project, Milestone, Developer, ActivityEvent } from "../config/types";
+import type { Project, Milestone, Developer, ActivityEvent, ProjectPayments } from "../config/types";
 
 export function useContract() {
   const [, setProvider] = useState<ethers.BrowserProvider | ethers.JsonRpcProvider | null>(null);
@@ -9,6 +9,7 @@ export function useContract() {
   const [contract, setContract] = useState<ethers.Contract | null>(null);
   const [readContract, setReadContract] = useState<ethers.Contract | null>(null);
   const [account, setAccount] = useState<string>("");
+  const [balance, setBalance] = useState<string>("");
   const [studioAddress, setStudioAddress] = useState<string>("");
   const [connected, setConnected] = useState(false);
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
@@ -32,6 +33,15 @@ export function useContract() {
     }, ...prev].slice(0, 50));
   }, []);
 
+  const fetchBalance = useCallback(async (rpcProvider: ethers.JsonRpcProvider, addr: string) => {
+    try {
+      const raw = await rpcProvider.getBalance(addr);
+      setBalance(parseFloat(ethers.formatEther(raw)).toFixed(4));
+    } catch {
+      setBalance("");
+    }
+  }, []);
+
   // Connect directly to Hardhat node via JSON-RPC (no MetaMask)
   const connect = useCallback(async () => {
     try {
@@ -44,13 +54,14 @@ export function useContract() {
       setContract(c);
       setAccount(addr);
       setConnected(true);
+      fetchBalance(rpcProvider, addr);
 
       const studioAddr = await c.studio();
       setStudioAddress(studioAddr);
     } catch (err) {
       console.error("Connection failed:", err);
     }
-  }, []);
+  }, [fetchBalance]);
 
   // Switch account (for role demo — uses JSON-RPC signers)
   const switchAccount = useCallback(async (index: number) => {
@@ -64,10 +75,11 @@ export function useContract() {
       setContract(c);
       setAccount(addr);
       setConnected(true);
+      fetchBalance(rpcProvider, addr);
     } catch (err) {
       console.error("Switch account failed:", err);
     }
-  }, []);
+  }, [fetchBalance]);
 
   // ──── Read Functions ────
   const getProjectCount = useCallback(async (): Promise<bigint> => {
@@ -86,6 +98,7 @@ export function useContract() {
       description: raw.description,
       budget: raw.budget,
       deadline: raw.deadline,
+      client: raw.client,
       developer: raw.developer,
       status: Number(raw.status) as Project["status"],
       milestoneCount: raw.milestoneCount,
@@ -182,8 +195,37 @@ export function useContract() {
     addActivity("DeveloperRated", `Developer rated ${rating}/5`, `Project #${projectId}`);
   }, [contract, addActivity]);
 
+  const fundProject = useCallback(async (projectId: bigint, amountWei: bigint) => {
+    if (!contract) throw new Error("Not connected");
+    const tx = await contract.fundProject(projectId, { value: amountWei });
+    await tx.wait();
+    addActivity("ProjectFunded", `Project #${projectId} funded`, `${ethers.formatEther(amountWei)} ETH`);
+  }, [contract, addActivity]);
+
+  const getProjectPayments = useCallback(async (projectId: bigint): Promise<ProjectPayments> => {
+    const c = readContract || contract;
+    if (!c) throw new Error("Not connected");
+    const [totalBudget, clientFunded, paidToDev, remaining] = await c.getProjectPayments(projectId);
+    return { totalBudget, clientFunded, paidToDev, remaining };
+  }, [readContract, contract]);
+
+  const cancelProject = useCallback(async (projectId: bigint) => {
+    if (!contract) throw new Error("Not connected");
+    const tx = await contract.cancelProject(projectId);
+    await tx.wait();
+    addActivity("ProjectCancelled", `Project #${projectId} cancelled`, "Budget refunded to studio");
+  }, [contract, addActivity]);
+
+  const withdrawUnclaimable = useCallback(async (projectId: bigint) => {
+    if (!contract) throw new Error("Not connected");
+    const tx = await contract.withdrawUnclaimable(projectId);
+    await tx.wait();
+    addActivity("UnclaimableWithdrawn", `Unclaimable funds withdrawn`, `Project #${projectId}`);
+  }, [contract, addActivity]);
+
   return {
     account,
+    balance,
     studioAddress,
     connected,
     activity,
@@ -203,5 +245,9 @@ export function useContract() {
     raiseDispute,
     resolveDispute,
     rateDeveloper,
+    fundProject,
+    getProjectPayments,
+    cancelProject,
+    withdrawUnclaimable,
   };
 }

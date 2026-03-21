@@ -142,6 +142,20 @@ async function main() {
 
   console.log("  E-commerce Dashboard: 1.5 ETH, 3 milestones, Bob assigned, 0/3 approved");
 
+  // ──── Client Funding Demo ────
+  console.log("\nClient funding demo...");
+  const clientSigner = await provider.getSigner(3);
+  const ClientContract = new ethers.Contract(addr, artifact.abi, clientSigner);
+  const clientAddr = await clientSigner.getAddress();
+
+  // Client funds the Mobile Banking App (project #5) with 0.5 ETH
+  tx = await ClientContract.fundProject(5, { value: ethers.parseEther("0.5") }); await tx.wait();
+  console.log(`  Client (${clientAddr.slice(0, 6)}...) funded Mobile Banking App with 0.5 ETH`);
+
+  // Client funds E-commerce Dashboard (project #6) with 1.0 ETH
+  tx = await ClientContract.fundProject(6, { value: ethers.parseEther("1.0") }); await tx.wait();
+  console.log(`  Client funded E-commerce Dashboard with 1.0 ETH`);
+
   // ──── Print Summary ────
   const [aliceAvg, aliceCount] = await S.getDeveloperRating(aliceAddr);
   const [bobAvg, bobCount] = await S.getDeveloperRating(bobAddr);

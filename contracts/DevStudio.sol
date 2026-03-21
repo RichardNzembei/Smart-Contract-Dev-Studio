@@ -39,6 +39,7 @@ contract DevStudio {
         string description;
         uint256 budget;
         uint256 deadline;
+        address client;
         address developer;
         ProjectStatus status;
         uint256 milestoneCount;
@@ -48,10 +49,14 @@ contract DevStudio {
     // ──────────────────── State ────────────────────
     address public studio;
     uint256 public projectCount;
+    bool private _locked;
 
     mapping(address => Developer) public developers;
     mapping(uint256 => Project) public projects;
     mapping(uint256 => mapping(uint256 => Milestone)) public milestones;
+    mapping(uint256 => bool) public projectRated;
+    mapping(uint256 => bool) public projectWithdrawn;
+    mapping(uint256 => uint256) public projectFunded; // total ETH funded by clients per project
 
     // ──────────────────── Events ────────────────────
     event DeveloperRegistered(address indexed wallet, string name);
@@ -64,6 +69,10 @@ contract DevStudio {
     event DisputeResolved(uint256 indexed projectId, bool inFavorOfDeveloper);
     event DeveloperRated(address indexed developer, uint256 indexed projectId, uint8 rating);
     event ProjectCompleted(uint256 indexed projectId);
+    event ProjectCancelled(uint256 indexed projectId);
+    event ProjectFunded(uint256 indexed projectId, address indexed funder, uint256 amount);
+    event DeveloperPaid(uint256 indexed projectId, address indexed developer, uint256 milestoneIndex, uint256 amount);
+    event UnclaimableWithdrawn(uint256 indexed projectId, uint256 amount);
 
     // ──────────────────── Modifiers ────────────────────
     modifier onlyStudio() {
@@ -74,6 +83,13 @@ contract DevStudio {
     modifier onlyAssignedDev(uint256 _projectId) {
         require(projects[_projectId].developer == msg.sender, "Only assigned developer can call this");
         _;
+    }
+
+    modifier nonReentrant() {
+        require(!_locked, "ReentrancyGuard: reentrant call");
+        _locked = true;
+        _;
+        _locked = false;
     }
 
     // ──────────────────── Constructor ────────────────────
@@ -116,6 +132,7 @@ contract DevStudio {
             description: _description,
             budget: msg.value,
             deadline: _deadline,
+            client: address(0),
             developer: address(0),
             status: ProjectStatus.Active,
             milestoneCount: 0,
@@ -123,6 +140,23 @@ contract DevStudio {
         });
 
         emit ProjectCreated(projectId, _title, msg.value, _deadline);
+    }
+
+    // ──────────────────── Client Funding ────────────────────
+    function fundProject(uint256 _projectId) external payable {
+        Project storage project = projects[_projectId];
+        require(project.status == ProjectStatus.Active, "Project is not active");
+        require(msg.value > 0, "Must send ETH to fund");
+
+        project.budget += msg.value;
+        projectFunded[_projectId] += msg.value;
+
+        // Track the first funder as the client
+        if (project.client == address(0)) {
+            project.client = msg.sender;
+        }
+
+        emit ProjectFunded(_projectId, msg.sender, msg.value);
     }
 
     function addMilestone(
@@ -176,13 +210,14 @@ contract DevStudio {
         Milestone storage milestone = milestones[_projectId][_milestoneIndex];
         require(milestone.status == MilestoneStatus.Pending, "Milestone not in pending state");
         require(milestone.value > 0, "Milestone does not exist");
+        require(block.timestamp <= milestone.deadline, "Milestone deadline passed");
 
         milestone.status = MilestoneStatus.Submitted;
 
         emit MilestoneSubmitted(_projectId, _milestoneIndex);
     }
 
-    function approveMilestone(uint256 _projectId, uint256 _milestoneIndex) external onlyStudio {
+    function approveMilestone(uint256 _projectId, uint256 _milestoneIndex) external onlyStudio nonReentrant {
         Project storage project = projects[_projectId];
         require(project.status == ProjectStatus.Active, "Project is not active");
         require(project.developer != address(0), "No developer assigned");
@@ -198,6 +233,7 @@ contract DevStudio {
         require(sent, "Payment failed");
 
         emit MilestoneApproved(_projectId, _milestoneIndex, milestone.value);
+        emit DeveloperPaid(_projectId, project.developer, _milestoneIndex, milestone.value);
 
         // Check if all milestones are approved
         if (project.approvedCount == project.milestoneCount) {
@@ -220,7 +256,7 @@ contract DevStudio {
         emit DisputeRaised(_projectId, msg.sender);
     }
 
-    function resolveDispute(uint256 _projectId, bool _inFavorOfDeveloper) external onlyStudio {
+    function resolveDispute(uint256 _projectId, bool _inFavorOfDeveloper) external onlyStudio nonReentrant {
         Project storage project = projects[_projectId];
         require(project.status == ProjectStatus.Disputed, "Project is not disputed");
 
@@ -261,12 +297,56 @@ contract DevStudio {
         require(project.status == ProjectStatus.Completed, "Project not completed");
         require(_rating >= 1 && _rating <= 5, "Rating must be 1-5");
         require(project.developer != address(0), "No developer assigned");
+        require(!projectRated[_projectId], "Already rated");
+
+        projectRated[_projectId] = true;
 
         Developer storage dev = developers[project.developer];
         dev.totalRating += _rating;
         dev.ratingCount++;
 
         emit DeveloperRated(project.developer, _projectId, _rating);
+    }
+
+    // ──────────────────── Project Cancellation ────────────────────
+    function cancelProject(uint256 _projectId) external onlyStudio nonReentrant {
+        Project storage project = projects[_projectId];
+        require(project.status == ProjectStatus.Active, "Project is not active");
+        require(project.approvedCount == 0, "Milestones already approved");
+
+        project.status = ProjectStatus.Cancelled;
+
+        (bool sent, ) = payable(studio).call{value: project.budget}("");
+        require(sent, "Refund failed");
+
+        emit ProjectCancelled(_projectId);
+    }
+
+    // ──────────────────── Withdraw Unclaimable Funds ────────────────────
+    function withdrawUnclaimable(uint256 _projectId) external onlyStudio nonReentrant {
+        Project storage project = projects[_projectId];
+        require(
+            project.status == ProjectStatus.Completed || project.status == ProjectStatus.Cancelled,
+            "Project must be completed or cancelled"
+        );
+        require(!projectWithdrawn[_projectId], "Already withdrawn");
+
+        uint256 paidOut = 0;
+        for (uint256 i = 0; i < project.milestoneCount; i++) {
+            if (milestones[_projectId][i].status == MilestoneStatus.Approved) {
+                paidOut += milestones[_projectId][i].value;
+            }
+        }
+
+        uint256 remaining = project.budget - paidOut;
+        require(remaining > 0, "No funds to withdraw");
+
+        projectWithdrawn[_projectId] = true;
+
+        (bool sent, ) = payable(studio).call{value: remaining}("");
+        require(sent, "Withdrawal failed");
+
+        emit UnclaimableWithdrawn(_projectId, remaining);
     }
 
     // ──────────────────── View Functions ────────────────────
@@ -280,6 +360,24 @@ contract DevStudio {
 
     function getMilestone(uint256 _projectId, uint256 _milestoneIndex) external view returns (Milestone memory) {
         return milestones[_projectId][_milestoneIndex];
+    }
+
+    function getProjectPayments(uint256 _projectId) external view returns (
+        uint256 totalBudget,
+        uint256 clientFunded,
+        uint256 paidToDev,
+        uint256 remaining
+    ) {
+        Project storage project = projects[_projectId];
+        totalBudget = project.budget;
+        clientFunded = projectFunded[_projectId];
+
+        for (uint256 i = 0; i < project.milestoneCount; i++) {
+            if (milestones[_projectId][i].status == MilestoneStatus.Approved) {
+                paidToDev += milestones[_projectId][i].value;
+            }
+        }
+        remaining = totalBudget - paidToDev;
     }
 
     function getDeveloperRating(address _wallet) external view returns (uint256 average, uint256 count) {

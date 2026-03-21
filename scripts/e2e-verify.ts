@@ -16,21 +16,21 @@ const artifact = JSON.parse(
   readFileSync("artifacts/contracts/DevStudio.sol/DevStudio.json", "utf-8")
 );
 
-// Hardhat test accounts
-const KEYS = [
-  "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80", // Account 0 — Studio
-  "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d", // Account 1 — Alice (Dev)
-  "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a", // Account 2 — Bob (Dev)
-  "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6", // Account 3 — Client
-];
+// Disable provider caching so getBalance returns fresh data after each tx
+const provider = new ethers.JsonRpcProvider(RPC, undefined, { cacheTimeout: -1 });
 
-const provider = new ethers.JsonRpcProvider(RPC);
-
-function getWallet(index: number) {
-  return new ethers.NonceManager(new ethers.Wallet(KEYS[index], provider));
+// Use JsonRpcSigner (managed by the node) for reliable nonce handling
+async function getSigner(index: number) {
+  return provider.getSigner(index);
 }
 
-function getContract(address: string, signer: ethers.NonceManager) {
+// Fresh balance read — bypasses any provider cache
+async function bal(address: string): Promise<bigint> {
+  const hex = await provider.send("eth_getBalance", [address, "latest"]);
+  return BigInt(hex);
+}
+
+function getContract(address: string, signer: ethers.Signer) {
   return new ethers.Contract(address, artifact.abi, signer);
 }
 
@@ -68,12 +68,6 @@ async function send(contract: ethers.Contract, method: string, args: any[], opts
   return tx.wait();
 }
 
-function gasCost(receipt: ethers.TransactionReceipt): bigint {
-  // EIP-1559: use effectiveGasPrice if available, fallback to gasPrice
-  const price = receipt.gasPrice ?? 0n;
-  return receipt.gasUsed * price;
-}
-
 // Check balance within 0.01 ETH tolerance (to handle gas variations)
 function approxEqual(a: bigint, b: bigint, label: string) {
   const diff = a > b ? a - b : b - a;
@@ -86,10 +80,10 @@ async function main() {
   console.log("║   DevStudio — Full End-to-End Real-World Verification       ║");
   console.log("╚══════════════════════════════════════════════════════════════╝\n");
 
-  const studio = getWallet(0);
-  const alice  = getWallet(1);
-  const bob    = getWallet(2);
-  const client = getWallet(3);
+  const studio = await getSigner(0);
+  const alice  = await getSigner(1);
+  const bob    = await getSigner(2);
+  const client = await getSigner(3);
 
   const studioAddr = await studio.getAddress();
   const aliceAddr  = await alice.getAddress();
@@ -104,13 +98,10 @@ async function main() {
   // STEP 0: Deploy fresh contract
   // ═══════════════════════════════════════════
   console.log("━━━ STEP 0: Deploy Fresh Contract ━━━");
-  const deployWallet = new ethers.Wallet(KEYS[0], provider);
-  const factory = new ethers.ContractFactory(artifact.abi, artifact.bytecode, deployWallet);
+  const factory = new ethers.ContractFactory(artifact.abi, artifact.bytecode, studio);
   const deployed = await factory.deploy();
   await deployed.waitForDeployment();
   const addr = await deployed.getAddress();
-  // Reset nonce managers after deployment
-  studio.reset();
   console.log(`  Contract deployed at: ${addr}`);
 
   const S  = getContract(addr, studio);
@@ -157,7 +148,7 @@ async function main() {
   const budget = ethers.parseEther("2.0");
 
   await send(S, "createProject", ["Mobile Banking App", "iOS and Android app with login, dashboard, transfers", deadline], { value: budget });
-  const contractBal = await provider.getBalance(addr);
+  const contractBal = await bal(addr);
   ok(contractBal === budget, `Contract holds 2 ETH after project creation (actual: ${fmt(contractBal)})`);
 
   const p0 = await S.getProject(0n);
@@ -242,7 +233,7 @@ async function main() {
 
   for (let i = 0; i < 4; i++) {
     const bi = BigInt(i);
-    const aliceBal0 = await provider.getBalance(aliceAddr);
+    const aliceBal0 = await bal(aliceAddr);
 
     // Alice submits
     await send(A, "submitMilestone", [0n, bi]);
@@ -255,7 +246,7 @@ async function main() {
     m = await S.getMilestone(0n, bi);
     ok(m.status === 2n, `Milestone #${i} approved`);
 
-    const aliceBal1 = await provider.getBalance(aliceAddr);
+    const aliceBal1 = await bal(aliceAddr);
     // Alice pays gas for submit, but receives milestone value from approve
     // Net gain should be approximately milestone value (minus small gas)
     const netGain = aliceBal1 - aliceBal0;
@@ -267,7 +258,7 @@ async function main() {
   ok(p0done.status === 1n, "Project #0 auto-completed (all milestones approved)");
   ok(p0done.approvedCount === 4n, "4/4 milestones approved");
 
-  const contractBal1 = await provider.getBalance(addr);
+  const contractBal1 = await bal(addr);
   ok(contractBal1 === 0n, `Contract balance: 0 ETH (all paid out)`);
 
   // Can't re-approve already-approved milestone
@@ -331,12 +322,12 @@ async function main() {
   );
 
   // Studio resolves in favor of Bob → Bob gets paid for submitted milestone #1
-  const bobBal0 = await provider.getBalance(bobAddr);
+  // Balance check: provider.getBalance() before/after, with 0.01 ETH tolerance for gas.
+  const bobBal0 = await bal(bobAddr);
   await send(S, "resolveDispute", [1n, true]);
-  const bobBal1 = await provider.getBalance(bobAddr);
-  const bobGain = bobBal1 - bobBal0;
-  // Bob doesn't pay gas (studio does), so gain should be exact
-  approxEqual(bobGain, ethers.parseEther("0.5"), `Bob received ~0.5 ETH from dispute resolution`);
+  const bobBal1 = await bal(bobAddr);
+  // Bob doesn't pay gas (studio does), so his balance should increase by ~0.5 ETH
+  approxEqual(bobBal1 - bobBal0, ethers.parseEther("0.5"), `Bob received ~0.5 ETH from dispute resolution`);
   ok((await S.getProject(1n)).status === 1n, "Project #1: Completed (dispute resolved for dev)");
 
   // ═══════════════════════════════════════════
@@ -368,13 +359,13 @@ async function main() {
   ok((await S.getProject(2n)).status === 2n, "Project #2: Disputed");
 
   // Resolve against developer → full refund to studio
-  const studioBal0 = await provider.getBalance(studioAddr);
+  // Balance check: provider.getBalance() before/after, with 0.01 ETH tolerance for gas.
+  const studioBal0 = await bal(studioAddr);
   await send(S, "resolveDispute", [2n, false]);
-  const studioBal1 = await provider.getBalance(studioAddr);
+  const studioBal1 = await bal(studioAddr);
 
-  // Studio pays gas but receives 1.0 ETH refund, net gain should be ~1.0 ETH
-  const studioNetGain = studioBal1 - studioBal0;
-  approxEqual(studioNetGain, ethers.parseEther("1.0"), `Studio refunded ~1.0 ETH`);
+  // Studio pays gas but receives 1.0 ETH refund; net gain should be ~1.0 ETH (0.01 ETH tolerance covers gas)
+  approxEqual(studioBal1 - studioBal0, ethers.parseEther("1.0"), `Studio refunded ~1.0 ETH`);
   ok((await S.getProject(2n)).status === 3n, "Project #2: Cancelled");
 
   // Can't rate on cancelled project
@@ -406,12 +397,13 @@ async function main() {
   // Dispute raised, resolved against dev
   await send(S, "raiseDispute", [3n]);
 
-  const studioBal2 = await provider.getBalance(studioAddr);
+  // Balance check: provider.getBalance() before/after, with 0.01 ETH tolerance for gas.
+  const studioBal2 = await bal(studioAddr);
   await send(S, "resolveDispute", [3n, false]);
-  const studioBal3 = await provider.getBalance(studioAddr);
+  const studioBal3 = await bal(studioAddr);
 
-  const refund = studioBal3 - studioBal2;
-  approxEqual(refund, ethers.parseEther("0.7"), `Studio refunded ~0.7 ETH`);
+  // Studio pays gas but receives 0.7 ETH refund (1.0 - 0.3 already paid); 0.01 ETH tolerance covers gas
+  approxEqual(studioBal3 - studioBal2, ethers.parseEther("0.7"), `Studio refunded ~0.7 ETH`);
   ok((await S.getProject(3n)).status === 3n, "Project #3: Cancelled");
 
   // ═══════════════════════════════════════════
@@ -452,9 +444,9 @@ async function main() {
   ok((await S.getProject(5n)).status === 2n, "Studio raised dispute on project #5");
 
   // Resolve in favor of dev — but no submitted milestones, so no payment
-  const bobBal2 = await provider.getBalance(bobAddr);
+  const bobBal2 = await bal(bobAddr);
   await send(S, "resolveDispute", [5n, true]);
-  const bobBal3 = await provider.getBalance(bobAddr);
+  const bobBal3 = await bal(bobAddr);
   ok(bobBal3 === bobBal2, "No payment when no milestones were submitted");
   ok((await S.getProject(5n)).status === 1n, "Project #5: Completed (dispute resolved, no work)");
 
@@ -475,7 +467,7 @@ async function main() {
   console.log("  Projects:");
   for (const s of statuses) console.log(`    ${s}`);
 
-  const finalBal = await provider.getBalance(addr);
+  const finalBal = await bal(addr);
   console.log(`  Contract balance: ${fmt(finalBal)}`);
   // Project 0: 2.0 paid, Project 1: 1.0 paid + 0.5 locked (ms#2 never resolved),
   // Project 2: 1.0 refunded, Project 3: 0.3 paid + 0.7 refunded

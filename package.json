@@ -4,7 +4,12 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "npx hardhat test",
+    "compile": "npx hardhat compile",
+    "node": "npx hardhat node",
+    "seed": "npx tsx scripts/seed.ts",
+    "deploy": "npx tsx scripts/deploy.ts",
+    "e2e": "npx tsx scripts/e2e-verify.ts"
   },
   "keywords": [],
   "author": "",

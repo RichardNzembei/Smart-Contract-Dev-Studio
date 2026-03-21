@@ -29,6 +29,12 @@ export function DeveloperPanel({ role, connected, registerDeveloper, knownDevs }
   const [devName, setDevName] = useState("");
   const [loading, setLoading] = useState(false);
   const [registered, setRegistered] = useState(false);
+  const [toast, setToast] = useState<{ message: string; type: "error" | "success" } | null>(null);
+
+  const showToast = (message: string, type: "error" | "success") => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 4000);
+  };
 
   // Reset registered state when role changes
   useEffect(() => {
@@ -43,13 +49,17 @@ export function DeveloperPanel({ role, connected, registerDeveloper, knownDevs }
       setRegistered(true);
       setDevName("");
     } catch (err: any) {
-      alert(err.message || "Registration failed");
+      showToast(err.message || "Registration failed", "error");
     } finally {
       setLoading(false);
     }
   };
 
   return (
+    <>
+    {toast && (
+      <div className={`toast toast-${toast.type}`}>{toast.message}</div>
+    )}
     <div className="panel dev-panel">
       <div className="panel-header">
         <h2>Developers</h2>
@@ -96,5 +106,6 @@ export function DeveloperPanel({ role, connected, registerDeveloper, knownDevs }
         )}
       </div>
     </div>
+    </>
   );
 }
