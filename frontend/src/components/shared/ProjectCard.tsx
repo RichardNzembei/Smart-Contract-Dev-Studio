@@ -49,8 +49,7 @@ export function ProjectCard({ project: p, selected, onClick, showFundingBar, cli
             <span className="health-dot" title={`${Math.round(Number(p.approvedCount * 100n / p.milestoneCount))}% complete`}
               style={{
                 width: 8, height: 8, borderRadius: "50%", display: "inline-block",
-                background: p.status === ProjectStatus.Disputed ? "var(--red)" :
-                  Number(p.approvedCount) === 0 ? "var(--yellow)" :
+                background: Number(p.approvedCount) === 0 ? "var(--yellow)" :
                   Number(p.approvedCount) === Number(p.milestoneCount) ? "var(--green)" : "var(--blue)",
               }}
             />

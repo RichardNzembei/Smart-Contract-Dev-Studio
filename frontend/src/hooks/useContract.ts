@@ -233,7 +233,7 @@ export function useContract() {
     if (!contract) throw new Error("Not connected");
     const tx = await contract.cancelProject(projectId);
     await tx.wait();
-    addActivity("ProjectCancelled", `Project #${projectId} cancelled`, "Budget refunded to studio");
+    addActivity("ProjectCancelled", `Project #${projectId} cancelled`, "Budget refunded proportionally");
   }, [contract, addActivity]);
 
   const withdrawUnclaimable = useCallback(async (projectId: bigint) => {
@@ -313,6 +313,118 @@ export function useContract() {
     return { weightedAverage, totalWeight, count };
   }, [readContract, contract]);
 
+  // Phase 2.1: Get dispute raiser
+  const getDisputeRaiser = useCallback(async (projectId: bigint): Promise<string> => {
+    const c = readContract || contract;
+    if (!c) return ethers.ZeroAddress;
+    return c.getDisputeRaiser(projectId);
+  }, [readContract, contract]);
+
+  // Phase 2.3: Developer rates studio
+  const rateStudio = useCallback(async (projectId: bigint, rating: number) => {
+    if (!contract) throw new Error("Not connected");
+    const tx = await contract.rateStudio(projectId, rating);
+    await tx.wait();
+    addActivity("StudioRated", `Studio rated ${rating}/5`, `Project #${projectId}`);
+  }, [contract, addActivity]);
+
+  // Phase 2.3: Get studio rating
+  const getStudioRating = useCallback(async (): Promise<{ average: bigint; count: bigint }> => {
+    const c = readContract || contract;
+    if (!c) return { average: 0n, count: 0n };
+    const [average, count] = await c.getStudioRating();
+    return { average, count };
+  }, [readContract, contract]);
+
+  // Phase 2.3 / Gap E: Check if project already rated
+  const isProjectRated = useCallback(async (projectId: bigint): Promise<boolean> => {
+    const c = readContract || contract;
+    if (!c) return false;
+    return c.projectRated(projectId);
+  }, [readContract, contract]);
+
+  const isProjectStudioRated = useCallback(async (projectId: bigint): Promise<boolean> => {
+    const c = readContract || contract;
+    if (!c) return false;
+    return c.projectStudioRated(projectId);
+  }, [readContract, contract]);
+
+  // Phase 3.1: Get funding cap
+  const getProjectFundingCap = useCallback(async (projectId: bigint): Promise<bigint> => {
+    const c = readContract || contract;
+    if (!c) return 0n;
+    return c.projectFundingCap(projectId);
+  }, [readContract, contract]);
+
+  // Phase 3.2: Get funder contribution
+  const getFunderContribution = useCallback(async (projectId: bigint, funder: string): Promise<bigint> => {
+    const c = readContract || contract;
+    if (!c) return 0n;
+    return c.getFunderContribution(projectId, funder);
+  }, [readContract, contract]);
+
+  // Phase 4.1: Propose developer
+  const proposeDeveloper = useCallback(async (projectId: bigint, devAddress: string) => {
+    if (!contract) throw new Error("Not connected");
+    const tx = await contract.proposeDeveloper(projectId, devAddress);
+    await tx.wait();
+    addActivity("DeveloperProposed", `Developer proposed for project #${projectId}`, devAddress.slice(0, 6) + "...");
+  }, [contract, addActivity]);
+
+  // Phase 4.1: Accept assignment
+  const acceptAssignment = useCallback(async (projectId: bigint) => {
+    if (!contract) throw new Error("Not connected");
+    const tx = await contract.acceptAssignment(projectId);
+    await tx.wait();
+    addActivity("DeveloperAccepted", `Assignment accepted`, `Project #${projectId}`);
+  }, [contract, addActivity]);
+
+  // Phase 4.1: Reject assignment
+  const rejectAssignment = useCallback(async (projectId: bigint) => {
+    if (!contract) throw new Error("Not connected");
+    const tx = await contract.rejectAssignment(projectId);
+    await tx.wait();
+    addActivity("DeveloperRejected", `Assignment rejected`, `Project #${projectId}`);
+  }, [contract, addActivity]);
+
+  // Phase 4.1: Get proposed developer
+  const getProposedDeveloper = useCallback(async (projectId: bigint): Promise<string> => {
+    const c = readContract || contract;
+    if (!c) return ethers.ZeroAddress;
+    return c.proposedDeveloper(projectId);
+  }, [readContract, contract]);
+
+  // Phase 4.2: Expire project
+  const expireProject = useCallback(async (projectId: bigint) => {
+    if (!contract) throw new Error("Not connected");
+    const tx = await contract.expireProject(projectId);
+    await tx.wait();
+    addActivity("ProjectExpired", `Project #${projectId} expired`, "Budget refunded proportionally");
+  }, [contract, addActivity]);
+
+  // Phase 1.3: Get active milestone count
+  const getActiveMilestoneCount = useCallback(async (projectId: bigint): Promise<bigint> => {
+    const c = readContract || contract;
+    if (!c) return 0n;
+    return c.getActiveMilestoneCount(projectId);
+  }, [readContract, contract]);
+
+  // Gap D: Extend milestone deadline
+  const extendMilestoneDeadline = useCallback(async (projectId: bigint, milestoneIndex: bigint, newDeadline: bigint) => {
+    if (!contract) throw new Error("Not connected");
+    const tx = await contract.extendMilestoneDeadline(projectId, milestoneIndex, newDeadline);
+    await tx.wait();
+    addActivity("MilestoneDeadlineExtended", `Milestone #${milestoneIndex} deadline extended`, `Project #${projectId}`);
+  }, [contract, addActivity]);
+
+  // Phase 3.1: Set funding cap
+  const setFundingCap = useCallback(async (projectId: bigint, cap: bigint) => {
+    if (!contract) throw new Error("Not connected");
+    const tx = await contract.setFundingCap(projectId, cap);
+    await tx.wait();
+    addActivity("FundingCapSet", `Funding cap set`, `${ethers.formatEther(cap)} ETH`);
+  }, [contract, addActivity]);
+
   return {
     account,
     balance,
@@ -350,5 +462,20 @@ export function useContract() {
     removeMilestone,
     extendDeadline,
     getWeightedRating,
+    getDisputeRaiser,
+    rateStudio,
+    getStudioRating,
+    isProjectRated,
+    isProjectStudioRated,
+    getProjectFundingCap,
+    getFunderContribution,
+    proposeDeveloper,
+    acceptAssignment,
+    rejectAssignment,
+    getProposedDeveloper,
+    expireProject,
+    getActiveMilestoneCount,
+    extendMilestoneDeadline,
+    setFundingCap,
   };
 }

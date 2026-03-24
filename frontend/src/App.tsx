@@ -16,7 +16,7 @@ interface DevDisplay {
 }
 
 function App() {
-  const [role, setRole] = useState<Role>("studio");
+  const [role, setRole] = useState<Role>("client");
   const [showNewProject, setShowNewProject] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [knownDevs, setKnownDevs] = useState<DevDisplay[]>([]);
@@ -50,13 +50,21 @@ function App() {
     getRegisteredDevelopers,
     withdrawFunds,
     getPendingWithdrawal,
-    reassignDeveloper,
     topUpBudget,
-    batchApproveMilestones,
-    editMilestone,
-    removeMilestone,
-    extendDeadline,
-    getWeightedRating,
+    getDisputeRaiser,
+    rateStudio,
+    getStudioRating,
+    isProjectRated,
+    isProjectStudioRated,
+    getProjectFundingCap,
+    getFunderContribution,
+    proposeDeveloper,
+    acceptAssignment,
+    rejectAssignment,
+    getProposedDeveloper,
+    expireProject,
+    getActiveMilestoneCount,
+    setFundingCap,
   } = useContract();
 
   const refresh = useCallback(() => {
@@ -89,10 +97,11 @@ function App() {
   }, [connected, getRegisteredDevelopers, getDeveloper, getDeveloperRating]);
 
   // Switch accounts when role changes
+  // Account mapping: client=#0, developer=#1, studio=#2
   const handleRoleChange = useCallback(
     (newRole: Role) => {
       setRole(newRole);
-      const index = newRole === "studio" ? 0 : newRole === "developer" ? 1 : 2;
+      const index = newRole === "client" ? 0 : newRole === "developer" ? 1 : 2;
       switchAccount(index);
     },
     [switchAccount]
@@ -143,28 +152,38 @@ function App() {
         networkName={networkName}
       />
 
-      {role === "studio" && (
-        <StudioDashboard
+      {role === "client" && (
+        <ClientDashboard
           account={account}
           balance={balance}
           refreshKey={refreshKey}
           activity={activity}
           knownDevs={knownDevs}
           onNewProject={() => setShowNewProject(true)}
-          onRefresh={refresh}
-          onRegisterDev={handleRegisterDev}
           getProjectCount={getProjectCount}
           getProject={getProject}
           getProjectPayments={getProjectPayments}
           getMilestone={getMilestone}
-          assignDeveloper={assignDeveloper}
+          getDeveloper={getDeveloper}
+          getDeveloperRating={getDeveloperRating}
           addMilestone={addMilestone}
           approveMilestone={approveMilestone}
-          raiseDispute={raiseDispute}
-          resolveDispute={resolveDispute}
+          proposeDeveloper={proposeDeveloper}
+          assignDeveloper={assignDeveloper}
           rateDeveloper={rateDeveloper}
           cancelProject={cancelProject}
           withdrawUnclaimable={withdrawUnclaimable}
+          isProjectRated={isProjectRated}
+          setFundingCap={setFundingCap}
+          topUpBudget={topUpBudget}
+          getProjectFundingCap={getProjectFundingCap}
+          getFunderContribution={getFunderContribution}
+          getActiveMilestoneCount={getActiveMilestoneCount}
+          fundProject={fundProject}
+          raiseDispute={raiseDispute}
+          withdrawFunds={withdrawFunds}
+          getPendingWithdrawal={getPendingWithdrawal}
+          onRefresh={refresh}
         />
       )}
 
@@ -185,25 +204,33 @@ function App() {
           raiseDispute={raiseDispute}
           withdrawFunds={withdrawFunds}
           getPendingWithdrawal={getPendingWithdrawal}
+          rateStudio={rateStudio}
+          isProjectStudioRated={isProjectStudioRated}
+          acceptAssignment={acceptAssignment}
+          rejectAssignment={rejectAssignment}
+          getProposedDeveloper={getProposedDeveloper}
+          getActiveMilestoneCount={getActiveMilestoneCount}
           onRefresh={refresh}
         />
       )}
 
-      {role === "client" && (
-        <ClientDashboard
+      {role === "studio" && (
+        <StudioDashboard
           account={account}
           balance={balance}
           refreshKey={refreshKey}
           activity={activity}
+          onRefresh={refresh}
           getProjectCount={getProjectCount}
           getProject={getProject}
           getProjectPayments={getProjectPayments}
           getMilestone={getMilestone}
-          fundProject={fundProject}
           raiseDispute={raiseDispute}
-          getDeveloper={getDeveloper}
-          getDeveloperRating={getDeveloperRating}
-          onRefresh={refresh}
+          resolveDispute={resolveDispute}
+          expireProject={expireProject}
+          getDisputeRaiser={getDisputeRaiser}
+          getStudioRating={getStudioRating}
+          getActiveMilestoneCount={getActiveMilestoneCount}
         />
       )}
 

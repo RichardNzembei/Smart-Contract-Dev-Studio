@@ -24,9 +24,8 @@ contract DevStudio {
         uint256 totalRating;
         uint256 ratingCount;
         bool registered;
-        // H1: Budget-weighted reputation
-        uint256 totalWeightedRating; // sum of (rating * budget) across all rated projects
-        uint256 totalWeight;         // sum of budgets across all rated projects
+        uint256 totalWeightedRating;
+        uint256 totalWeight;
     }
 
     struct Milestone {
@@ -50,7 +49,7 @@ contract DevStudio {
     }
 
     // ──────────────────── State ────────────────────
-    address public studio;
+    address public studio; // Platform arbitrator only
     uint256 public projectCount;
     bool private _locked;
 
@@ -59,10 +58,20 @@ contract DevStudio {
     mapping(uint256 => mapping(uint256 => Milestone)) public milestones;
     mapping(uint256 => bool) public projectRated;
     mapping(uint256 => bool) public projectWithdrawn;
-    mapping(uint256 => uint256) public projectFunded; // total ETH funded by clients per project
+    mapping(uint256 => uint256) public projectFunded;
 
-    // C1: Pull-based payment balances
     mapping(address => uint256) public pendingWithdrawals;
+    mapping(uint256 => uint256) public removedMilestoneCount;
+    mapping(uint256 => address) public disputeRaisedBy;
+
+    uint256 public studioTotalRating;
+    uint256 public studioRatingCount;
+    mapping(uint256 => bool) public projectStudioRated;
+
+    mapping(uint256 => uint256) public projectFundingCap;
+    mapping(uint256 => mapping(address => uint256)) public funderContributions;
+    mapping(uint256 => address[]) internal _projectFunders;
+    mapping(uint256 => address) public proposedDeveloper;
 
     // ──────────────────── Events ────────────────────
     event DeveloperRegistered(address indexed wallet, string name);
@@ -74,8 +83,10 @@ contract DevStudio {
     event DisputeRaised(uint256 indexed projectId, address indexed raisedBy);
     event DisputeResolved(uint256 indexed projectId, bool inFavorOfDeveloper);
     event DeveloperRated(address indexed developer, uint256 indexed projectId, uint8 rating);
+    event StudioRated(uint256 indexed projectId, address indexed developer, uint8 rating);
     event ProjectCompleted(uint256 indexed projectId);
     event ProjectCancelled(uint256 indexed projectId);
+    event ProjectExpired(uint256 indexed projectId);
     event ProjectFunded(uint256 indexed projectId, address indexed funder, uint256 amount);
     event DeveloperPaid(uint256 indexed projectId, address indexed developer, uint256 milestoneIndex, uint256 amount);
     event UnclaimableWithdrawn(uint256 indexed projectId, uint256 amount);
@@ -83,12 +94,22 @@ contract DevStudio {
     event DeveloperReassigned(uint256 indexed projectId, address indexed oldDeveloper, address indexed newDeveloper);
     event BudgetIncreased(uint256 indexed projectId, uint256 amount);
     event DeadlineExtended(uint256 indexed projectId, uint256 newDeadline);
+    event MilestoneDeadlineExtended(uint256 indexed projectId, uint256 milestoneIndex, uint256 newDeadline);
     event MilestoneEdited(uint256 indexed projectId, uint256 milestoneIndex, string newTitle, uint256 newValue);
     event MilestoneRemoved(uint256 indexed projectId, uint256 milestoneIndex);
+    event DeveloperProposed(uint256 indexed projectId, address indexed developer);
+    event DeveloperAccepted(uint256 indexed projectId, address indexed developer);
+    event DeveloperRejected(uint256 indexed projectId, address indexed developer);
+    event FundingCapSet(uint256 indexed projectId, uint256 cap);
 
     // ──────────────────── Modifiers ────────────────────
     modifier onlyStudio() {
         require(msg.sender == studio, "Only studio can call this");
+        _;
+    }
+
+    modifier onlyClient(uint256 _projectId) {
+        require(projects[_projectId].client == msg.sender, "Only project client can call this");
         _;
     }
 
@@ -109,6 +130,47 @@ contract DevStudio {
         studio = msg.sender;
     }
 
+    // ──────────────────── Internal Helpers ────────────────────
+
+    function _activeMilestoneCount(uint256 _projectId) internal view returns (uint256) {
+        return projects[_projectId].milestoneCount - removedMilestoneCount[_projectId];
+    }
+
+    function _paidOut(uint256 _projectId) internal view returns (uint256 total) {
+        Project storage project = projects[_projectId];
+        for (uint256 i = 0; i < project.milestoneCount; i++) {
+            if (milestones[_projectId][i].status == MilestoneStatus.Approved) {
+                total += milestones[_projectId][i].value;
+            }
+        }
+    }
+
+    /// @dev Distributes refund proportionally to all funders
+    function _distributeRefund(uint256 _projectId, uint256 refund) internal {
+        Project storage project = projects[_projectId];
+        uint256 totalFunded = projectFunded[_projectId];
+
+        if (totalFunded > 0) {
+            address[] storage funders = _projectFunders[_projectId];
+            uint256 totalFunderShare = 0;
+            for (uint256 i = 0; i < funders.length; i++) {
+                uint256 contribution = funderContributions[_projectId][funders[i]];
+                uint256 funderShare = (refund * contribution) / project.budget;
+                if (funderShare > 0) {
+                    pendingWithdrawals[funders[i]] += funderShare;
+                    totalFunderShare += funderShare;
+                }
+            }
+            // Any rounding dust goes to studio (platform)
+            uint256 dust = refund - totalFunderShare;
+            if (dust > 0) {
+                pendingWithdrawals[studio] += dust;
+            }
+        } else {
+            pendingWithdrawals[studio] += refund;
+        }
+    }
+
     // ──────────────────── Developer Registration ────────────────────
     function registerDeveloper(string calldata _name) external {
         require(!developers[msg.sender].registered, "Already registered");
@@ -127,12 +189,13 @@ contract DevStudio {
         emit DeveloperRegistered(msg.sender, _name);
     }
 
-    // ──────────────────── Project Management ────────────────────
+    // ──────────────────── Project Creation (Client) ────────────────────
+    // Anyone can create a project — the creator becomes the client
     function createProject(
         string calldata _title,
         string calldata _description,
         uint256 _deadline
-    ) external payable onlyStudio {
+    ) external payable {
         require(msg.value > 0, "Budget must be greater than 0");
         require(_deadline > block.timestamp, "Deadline must be in the future");
         require(bytes(_title).length > 0, "Title cannot be empty");
@@ -146,50 +209,82 @@ contract DevStudio {
             description: _description,
             budget: msg.value,
             deadline: _deadline,
-            client: address(0),
+            client: msg.sender,
             developer: address(0),
             status: ProjectStatus.Active,
             milestoneCount: 0,
             approvedCount: 0
         });
 
+        // Track creator as initial funder
+        _projectFunders[projectId].push(msg.sender);
+        funderContributions[projectId][msg.sender] = msg.value;
+        projectFunded[projectId] = msg.value;
+        projectFundingCap[projectId] = msg.value;
+
         emit ProjectCreated(projectId, _title, msg.value, _deadline);
     }
 
-    // ──────────────────── Client Funding ────────────────────
+    // ──────────────────── Additional Funding ────────────────────
+    // Anyone can contribute additional funds to a project
     function fundProject(uint256 _projectId) external payable {
         Project storage project = projects[_projectId];
         require(project.status == ProjectStatus.Active, "Project is not active");
         require(msg.value > 0, "Must send ETH to fund");
 
+        uint256 cap = projectFundingCap[_projectId];
+        if (cap > 0) {
+            require(projectFunded[_projectId] + msg.value <= cap, "Funding exceeds cap");
+        }
+
+        if (funderContributions[_projectId][msg.sender] == 0) {
+            require(_projectFunders[_projectId].length < 10, "Max 10 funders per project");
+            _projectFunders[_projectId].push(msg.sender);
+        }
+        funderContributions[_projectId][msg.sender] += msg.value;
+
         project.budget += msg.value;
         projectFunded[_projectId] += msg.value;
-
-        // Track the first funder as the client
-        if (project.client == address(0)) {
-            project.client = msg.sender;
-        }
 
         emit ProjectFunded(_projectId, msg.sender, msg.value);
     }
 
-    // C4: Studio top-up budget (doesn't touch client field)
-    function topUpBudget(uint256 _projectId) external payable onlyStudio {
+    // Client sets funding cap for external contributions
+    function setFundingCap(uint256 _projectId, uint256 _cap) external onlyClient(_projectId) {
+        require(projects[_projectId].status == ProjectStatus.Active, "Project is not active");
+        require(_cap >= projectFunded[_projectId], "Cap below already funded amount");
+        projectFundingCap[_projectId] = _cap;
+        emit FundingCapSet(_projectId, _cap);
+    }
+
+    // Client adds more funds to their project
+    function topUpBudget(uint256 _projectId) external payable onlyClient(_projectId) {
         Project storage project = projects[_projectId];
         require(project.status == ProjectStatus.Active, "Project is not active");
         require(msg.value > 0, "Must send ETH");
 
         project.budget += msg.value;
 
+        // Track contribution for proportional refunds
+        funderContributions[_projectId][msg.sender] += msg.value;
+        projectFunded[_projectId] += msg.value;
+
+        // Auto-raise cap if needed
+        if (projectFundingCap[_projectId] < projectFunded[_projectId]) {
+            projectFundingCap[_projectId] = projectFunded[_projectId];
+        }
+
         emit BudgetIncreased(_projectId, msg.value);
     }
+
+    // ──────────────────── Milestone Management (Client) ────────────────────
 
     function addMilestone(
         uint256 _projectId,
         string calldata _title,
         uint256 _value,
         uint256 _deadline
-    ) external onlyStudio {
+    ) external onlyClient(_projectId) {
         Project storage project = projects[_projectId];
         require(project.status == ProjectStatus.Active, "Project is not active");
         require(_value > 0, "Milestone value must be greater than 0");
@@ -197,7 +292,6 @@ contract DevStudio {
 
         uint256 milestoneIndex = project.milestoneCount;
 
-        // Check total milestone values don't exceed budget
         uint256 totalMilestoneValue = _value;
         for (uint256 i = 0; i < milestoneIndex; i++) {
             totalMilestoneValue += milestones[_projectId][i].value;
@@ -216,22 +310,22 @@ contract DevStudio {
         emit MilestoneAdded(_projectId, milestoneIndex, _title, _value, _deadline);
     }
 
-    // H2: Edit a pending milestone's title and/or value
+    // Edit a pending milestone — blocked after developer assigned
     function editMilestone(
         uint256 _projectId,
         uint256 _milestoneIndex,
         string calldata _newTitle,
         uint256 _newValue
-    ) external onlyStudio {
+    ) external onlyClient(_projectId) {
         Project storage project = projects[_projectId];
         require(project.status == ProjectStatus.Active, "Project is not active");
+        require(project.developer == address(0), "Cannot edit milestones after developer assigned");
 
         Milestone storage milestone = milestones[_projectId][_milestoneIndex];
         require(milestone.status == MilestoneStatus.Pending, "Can only edit pending milestones");
         require(milestone.value > 0, "Milestone does not exist");
         require(_newValue > 0, "Value must be greater than 0");
 
-        // Check new total doesn't exceed budget
         uint256 totalMilestoneValue = 0;
         for (uint256 i = 0; i < project.milestoneCount; i++) {
             if (i == _milestoneIndex) {
@@ -248,10 +342,11 @@ contract DevStudio {
         emit MilestoneEdited(_projectId, _milestoneIndex, _newTitle, _newValue);
     }
 
-    // H2: Remove a pending milestone (sets value to 0, marks as removed)
-    function removeMilestone(uint256 _projectId, uint256 _milestoneIndex) external onlyStudio {
+    // Remove a pending milestone — blocked after developer assigned
+    function removeMilestone(uint256 _projectId, uint256 _milestoneIndex) external onlyClient(_projectId) {
         Project storage project = projects[_projectId];
         require(project.status == ProjectStatus.Active, "Project is not active");
+        require(project.developer == address(0), "Cannot remove milestones after developer assigned");
 
         Milestone storage milestone = milestones[_projectId][_milestoneIndex];
         require(milestone.status == MilestoneStatus.Pending, "Can only remove pending milestones");
@@ -259,13 +354,14 @@ contract DevStudio {
 
         milestone.value = 0;
         milestone.title = "";
-        project.milestoneCount--;
+        removedMilestoneCount[_projectId]++;
 
         emit MilestoneRemoved(_projectId, _milestoneIndex);
     }
 
-    // H4: Extend project and milestone deadlines
-    function extendDeadline(uint256 _projectId, uint256 _newDeadline) external onlyStudio {
+    // ──────────────────── Deadline Management (Client) ────────────────────
+
+    function extendDeadline(uint256 _projectId, uint256 _newDeadline) external onlyClient(_projectId) {
         Project storage project = projects[_projectId];
         require(project.status == ProjectStatus.Active, "Project is not active");
         require(_newDeadline > project.deadline, "New deadline must be later than current");
@@ -275,26 +371,84 @@ contract DevStudio {
         emit DeadlineExtended(_projectId, _newDeadline);
     }
 
-    function assignDeveloper(uint256 _projectId, address _developer) external onlyStudio {
+    function extendMilestoneDeadline(
+        uint256 _projectId,
+        uint256 _milestoneIndex,
+        uint256 _newDeadline
+    ) external onlyClient(_projectId) {
+        Project storage project = projects[_projectId];
+        require(project.status == ProjectStatus.Active, "Project is not active");
+
+        Milestone storage milestone = milestones[_projectId][_milestoneIndex];
+        require(milestone.value > 0, "Milestone does not exist");
+        require(milestone.status == MilestoneStatus.Pending, "Can only extend pending milestones");
+        require(_newDeadline > milestone.deadline, "New deadline must be later than current");
+        require(_newDeadline <= project.deadline, "Milestone deadline exceeds project deadline");
+
+        milestone.deadline = _newDeadline;
+
+        emit MilestoneDeadlineExtended(_projectId, _milestoneIndex, _newDeadline);
+    }
+
+    // ──────────────────── Developer Assignment (Client) ────────────────────
+
+    // Client proposes a developer (two-step)
+    function proposeDeveloper(uint256 _projectId, address _developer) external onlyClient(_projectId) {
+        Project storage project = projects[_projectId];
+        require(project.status == ProjectStatus.Active, "Project is not active");
+        require(project.developer == address(0), "Developer already assigned");
+        require(developers[_developer].registered, "Developer not registered");
+
+        proposedDeveloper[_projectId] = _developer;
+
+        emit DeveloperProposed(_projectId, _developer);
+    }
+
+    // Developer accepts the proposal
+    function acceptAssignment(uint256 _projectId) external {
+        require(proposedDeveloper[_projectId] == msg.sender, "Not proposed for this project");
+        Project storage project = projects[_projectId];
+        require(project.status == ProjectStatus.Active, "Project is not active");
+        require(project.developer == address(0), "Developer already assigned");
+
+        project.developer = msg.sender;
+        proposedDeveloper[_projectId] = address(0);
+
+        emit DeveloperAccepted(_projectId, msg.sender);
+        emit DeveloperAssigned(_projectId, msg.sender);
+    }
+
+    // Developer rejects the proposal
+    function rejectAssignment(uint256 _projectId) external {
+        require(proposedDeveloper[_projectId] == msg.sender, "Not proposed for this project");
+
+        address dev = proposedDeveloper[_projectId];
+        proposedDeveloper[_projectId] = address(0);
+
+        emit DeveloperRejected(_projectId, dev);
+    }
+
+    // Client direct-assigns (skips proposal, for trusted developers)
+    function assignDeveloper(uint256 _projectId, address _developer) external onlyClient(_projectId) {
         Project storage project = projects[_projectId];
         require(project.status == ProjectStatus.Active, "Project is not active");
         require(project.developer == address(0), "Developer already assigned");
         require(developers[_developer].registered, "Developer not registered");
 
         project.developer = _developer;
+        proposedDeveloper[_projectId] = address(0);
 
         emit DeveloperAssigned(_projectId, _developer);
     }
 
-    // C3: Reassign developer on active projects
-    function reassignDeveloper(uint256 _projectId, address _newDeveloper) external onlyStudio {
+    // Client reassigns developer — requires no submitted milestones
+    function reassignDeveloper(uint256 _projectId, address _newDeveloper) external onlyClient(_projectId) {
         Project storage project = projects[_projectId];
         require(project.status == ProjectStatus.Active, "Project is not active");
         require(project.developer != address(0), "No developer assigned");
         require(_newDeveloper != project.developer, "Same developer");
         require(developers[_newDeveloper].registered, "New developer not registered");
 
-        // Ensure no milestones are in Submitted state (pending review)
         for (uint256 i = 0; i < project.milestoneCount; i++) {
             require(
                 milestones[_projectId][i].status != MilestoneStatus.Submitted,
@@ -309,6 +463,7 @@ contract DevStudio {
     }
 
     // ──────────────────── Milestone Workflow ────────────────────
+
     function submitMilestone(uint256 _projectId, uint256 _milestoneIndex) external onlyAssignedDev(_projectId) {
         Project storage project = projects[_projectId];
         require(project.status == ProjectStatus.Active, "Project is not active");
@@ -323,8 +478,8 @@ contract DevStudio {
         emit MilestoneSubmitted(_projectId, _milestoneIndex);
     }
 
-    // C1: Refactored to credit pendingWithdrawals instead of pushing ETH
-    function approveMilestone(uint256 _projectId, uint256 _milestoneIndex) external onlyStudio nonReentrant {
+    // Client approves submitted milestone and releases payment to developer
+    function approveMilestone(uint256 _projectId, uint256 _milestoneIndex) external onlyClient(_projectId) nonReentrant {
         Project storage project = projects[_projectId];
         require(project.status == ProjectStatus.Active, "Project is not active");
         require(project.developer != address(0), "No developer assigned");
@@ -335,21 +490,19 @@ contract DevStudio {
         milestone.status = MilestoneStatus.Approved;
         project.approvedCount++;
 
-        // Credit developer's withdrawal balance (pull pattern)
         pendingWithdrawals[project.developer] += milestone.value;
 
         emit MilestoneApproved(_projectId, _milestoneIndex, milestone.value);
         emit DeveloperPaid(_projectId, project.developer, _milestoneIndex, milestone.value);
 
-        // Check if all milestones are approved
-        if (project.approvedCount == project.milestoneCount) {
+        if (project.approvedCount == _activeMilestoneCount(_projectId)) {
             project.status = ProjectStatus.Completed;
             emit ProjectCompleted(_projectId);
         }
     }
 
-    // C5: Batch approve multiple milestones in one transaction
-    function batchApproveMilestones(uint256 _projectId, uint256[] calldata _milestoneIndices) external onlyStudio nonReentrant {
+    // Client batch-approves multiple milestones
+    function batchApproveMilestones(uint256 _projectId, uint256[] calldata _milestoneIndices) external onlyClient(_projectId) nonReentrant {
         Project storage project = projects[_projectId];
         require(project.status == ProjectStatus.Active, "Project is not active");
         require(project.developer != address(0), "No developer assigned");
@@ -368,13 +521,13 @@ contract DevStudio {
             emit DeveloperPaid(_projectId, project.developer, idx, milestone.value);
         }
 
-        if (project.approvedCount == project.milestoneCount) {
+        if (project.approvedCount == _activeMilestoneCount(_projectId)) {
             project.status = ProjectStatus.Completed;
             emit ProjectCompleted(_projectId);
         }
     }
 
-    // C1: Pull-based withdrawal for developers (and anyone with a pending balance)
+    // Pull-based withdrawal for anyone with a pending balance
     function withdraw() external nonReentrant {
         uint256 amount = pendingWithdrawals[msg.sender];
         require(amount > 0, "Nothing to withdraw");
@@ -387,7 +540,8 @@ contract DevStudio {
         emit Withdrawal(msg.sender, amount);
     }
 
-    // ──────────────────── Disputes ────────────────────
+    // ──────────────────── Disputes (Studio = Arbitrator) ────────────────────
+
     function raiseDispute(uint256 _projectId) external {
         Project storage project = projects[_projectId];
         require(project.status == ProjectStatus.Active, "Project is not active");
@@ -397,17 +551,21 @@ contract DevStudio {
         );
 
         project.status = ProjectStatus.Disputed;
+        disputeRaisedBy[_projectId] = msg.sender;
 
         emit DisputeRaised(_projectId, msg.sender);
     }
 
-    // C1 + C2: Refactored for pull payments and proportional refunds
+    // Only studio (platform arbitrator) resolves disputes
     function resolveDispute(uint256 _projectId, bool _inFavorOfDeveloper) external onlyStudio nonReentrant {
         Project storage project = projects[_projectId];
         require(project.status == ProjectStatus.Disputed, "Project is not disputed");
 
+        if (disputeRaisedBy[_projectId] == studio && !_inFavorOfDeveloper) {
+            revert("Studio cannot resolve self-raised dispute in own favor");
+        }
+
         if (_inFavorOfDeveloper) {
-            // Credit developer for all submitted (but unapproved) milestones
             for (uint256 i = 0; i < project.milestoneCount; i++) {
                 Milestone storage milestone = milestones[_projectId][i];
                 if (milestone.status == MilestoneStatus.Submitted || milestone.status == MilestoneStatus.Disputed) {
@@ -418,31 +576,10 @@ contract DevStudio {
             }
             project.status = ProjectStatus.Completed;
         } else {
-            // C2: Proportional refund to studio and client
-            uint256 paidOut = 0;
-            for (uint256 i = 0; i < project.milestoneCount; i++) {
-                if (milestones[_projectId][i].status == MilestoneStatus.Approved) {
-                    paidOut += milestones[_projectId][i].value;
-                }
-            }
+            uint256 paidOut = _paidOut(_projectId);
             uint256 refund = project.budget - paidOut;
             if (refund > 0) {
-                uint256 clientContribution = projectFunded[_projectId];
-                if (clientContribution > 0 && project.client != address(0)) {
-                    // Calculate proportional shares
-                    uint256 clientShare = (refund * clientContribution) / project.budget;
-                    uint256 studioShare = refund - clientShare;
-
-                    if (clientShare > 0) {
-                        pendingWithdrawals[project.client] += clientShare;
-                    }
-                    if (studioShare > 0) {
-                        pendingWithdrawals[studio] += studioShare;
-                    }
-                } else {
-                    // No client funding — all goes to studio
-                    pendingWithdrawals[studio] += refund;
-                }
+                _distributeRefund(_projectId, refund);
             }
             project.status = ProjectStatus.Cancelled;
         }
@@ -451,7 +588,9 @@ contract DevStudio {
     }
 
     // ──────────────────── Reputation ────────────────────
-    function rateDeveloper(uint256 _projectId, uint8 _rating) external onlyStudio {
+
+    // Client rates developer after project completion
+    function rateDeveloper(uint256 _projectId, uint8 _rating) external onlyClient(_projectId) {
         Project storage project = projects[_projectId];
         require(project.status == ProjectStatus.Completed, "Project not completed");
         require(_rating >= 1 && _rating <= 5, "Rating must be 1-5");
@@ -463,44 +602,62 @@ contract DevStudio {
         Developer storage dev = developers[project.developer];
         dev.totalRating += _rating;
         dev.ratingCount++;
-
-        // H1: Budget-weighted reputation
         dev.totalWeightedRating += uint256(_rating) * project.budget;
         dev.totalWeight += project.budget;
 
         emit DeveloperRated(project.developer, _projectId, _rating);
     }
 
-    // ──────────────────── Project Cancellation ────────────────────
-    // C2: Proportional refund on cancellation
-    function cancelProject(uint256 _projectId) external onlyStudio nonReentrant {
+    // Developer rates the platform experience
+    function rateStudio(uint256 _projectId, uint8 _rating) external {
+        Project storage project = projects[_projectId];
+        require(project.status == ProjectStatus.Completed, "Project not completed");
+        require(msg.sender == project.developer, "Only assigned developer can rate studio");
+        require(_rating >= 1 && _rating <= 5, "Rating must be 1-5");
+        require(!projectStudioRated[_projectId], "Already rated");
+
+        projectStudioRated[_projectId] = true;
+        studioTotalRating += _rating;
+        studioRatingCount++;
+
+        emit StudioRated(_projectId, msg.sender, _rating);
+    }
+
+    // ──────────────────── Project Cancellation (Client) ────────────────────
+
+    // Client cancels their project (only if no milestones approved)
+    function cancelProject(uint256 _projectId) external onlyClient(_projectId) nonReentrant {
         Project storage project = projects[_projectId];
         require(project.status == ProjectStatus.Active, "Project is not active");
         require(project.approvedCount == 0, "Milestones already approved");
 
         project.status = ProjectStatus.Cancelled;
-
-        // Proportional refund
-        uint256 clientContribution = projectFunded[_projectId];
-        if (clientContribution > 0 && project.client != address(0)) {
-            uint256 clientShare = (project.budget * clientContribution) / project.budget;
-            uint256 studioShare = project.budget - clientShare;
-
-            if (clientShare > 0) {
-                pendingWithdrawals[project.client] += clientShare;
-            }
-            if (studioShare > 0) {
-                pendingWithdrawals[studio] += studioShare;
-            }
-        } else {
-            pendingWithdrawals[studio] += project.budget;
-        }
+        _distributeRefund(_projectId, project.budget);
 
         emit ProjectCancelled(_projectId);
     }
 
-    // ──────────────────── Withdraw Unclaimable Funds ────────────────────
-    function withdrawUnclaimable(uint256 _projectId) external onlyStudio nonReentrant {
+    // Studio (platform) expires overdue projects
+    function expireProject(uint256 _projectId) external onlyStudio nonReentrant {
+        Project storage project = projects[_projectId];
+        require(project.status == ProjectStatus.Active, "Project is not active");
+        require(block.timestamp > project.deadline, "Project not yet expired");
+
+        project.status = ProjectStatus.Cancelled;
+
+        uint256 paidOut = _paidOut(_projectId);
+        uint256 refund = project.budget - paidOut;
+        if (refund > 0) {
+            _distributeRefund(_projectId, refund);
+        }
+
+        emit ProjectExpired(_projectId);
+        emit ProjectCancelled(_projectId);
+    }
+
+    // ──────────────────── Withdraw Surplus Funds (Client) ────────────────────
+
+    function withdrawUnclaimable(uint256 _projectId) external onlyClient(_projectId) nonReentrant {
         Project storage project = projects[_projectId];
         require(
             project.status == ProjectStatus.Completed || project.status == ProjectStatus.Cancelled,
@@ -508,25 +665,18 @@ contract DevStudio {
         );
         require(!projectWithdrawn[_projectId], "Already withdrawn");
 
-        uint256 paidOut = 0;
-        for (uint256 i = 0; i < project.milestoneCount; i++) {
-            if (milestones[_projectId][i].status == MilestoneStatus.Approved) {
-                paidOut += milestones[_projectId][i].value;
-            }
-        }
-
+        uint256 paidOut = _paidOut(_projectId);
         uint256 remaining = project.budget - paidOut;
         require(remaining > 0, "No funds to withdraw");
 
         projectWithdrawn[_projectId] = true;
-
-        // Credit to studio's pending withdrawal (pull pattern)
-        pendingWithdrawals[studio] += remaining;
+        _distributeRefund(_projectId, remaining);
 
         emit UnclaimableWithdrawn(_projectId, remaining);
     }
 
     // ──────────────────── View Functions ────────────────────
+
     function getDeveloper(address _wallet) external view returns (Developer memory) {
         return developers[_wallet];
     }
@@ -548,12 +698,7 @@ contract DevStudio {
         Project storage project = projects[_projectId];
         totalBudget = project.budget;
         clientFunded = projectFunded[_projectId];
-
-        for (uint256 i = 0; i < project.milestoneCount; i++) {
-            if (milestones[_projectId][i].status == MilestoneStatus.Approved) {
-                paidToDev += milestones[_projectId][i].value;
-            }
-        }
+        paidToDev = _paidOut(_projectId);
         remaining = totalBudget - paidToDev;
     }
 
@@ -563,10 +708,30 @@ contract DevStudio {
         return (dev.totalRating / dev.ratingCount, dev.ratingCount);
     }
 
-    // H1: Budget-weighted reputation (large projects count more)
     function getWeightedRating(address _wallet) external view returns (uint256 weightedAverage, uint256 totalWeight, uint256 count) {
         Developer storage dev = developers[_wallet];
         if (dev.totalWeight == 0) return (0, 0, 0);
         return (dev.totalWeightedRating / dev.totalWeight, dev.totalWeight, dev.ratingCount);
+    }
+
+    function getStudioRating() external view returns (uint256 average, uint256 count) {
+        if (studioRatingCount == 0) return (0, 0);
+        return (studioTotalRating / studioRatingCount, studioRatingCount);
+    }
+
+    function getDisputeRaiser(uint256 _projectId) external view returns (address) {
+        return disputeRaisedBy[_projectId];
+    }
+
+    function getActiveMilestoneCount(uint256 _projectId) external view returns (uint256) {
+        return _activeMilestoneCount(_projectId);
+    }
+
+    function getProjectFunders(uint256 _projectId) external view returns (address[] memory) {
+        return _projectFunders[_projectId];
+    }
+
+    function getFunderContribution(uint256 _projectId, address _funder) external view returns (uint256) {
+        return funderContributions[_projectId][_funder];
     }
 }

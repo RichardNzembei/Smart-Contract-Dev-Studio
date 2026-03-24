@@ -98,7 +98,7 @@ export function MilestoneList({ milestones, project, role, account, actionLoadin
                   {actionLoading === `submit-${i}` ? "Submitting..." : "Submit"}
                 </button>
               )}
-              {isStudio && ms.status === MilestoneStatus.Submitted && onApprove && (
+              {(isStudio || role === "client") && ms.status === MilestoneStatus.Submitted && onApprove && (
                 <button
                   className="btn btn-success btn-sm"
                   disabled={!!actionLoading}
