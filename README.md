@@ -147,4 +147,4 @@ Update `frontend/.env.local` with the deployed contract address and your Sepolia
 
 ## License
 
-ISC
+[MIT](LICENSE)
