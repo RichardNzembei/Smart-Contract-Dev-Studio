@@ -1,4 +1,5 @@
 import type { Role } from "../config/types";
+import { CopyAddress } from "./shared/CopyAddress";
 
 interface Props {
   role: Role;
@@ -7,6 +8,7 @@ interface Props {
   balance: string;
   connected: boolean;
   onConnect: () => void;
+  networkName?: string;
 }
 
 const ROLE_LABELS: Record<Role, string> = {
@@ -21,34 +23,37 @@ const ROLE_COLORS: Record<Role, string> = {
   client: "var(--blue)",
 };
 
-export function RoleSwitcher({ role, onRoleChange, account, balance, connected, onConnect }: Props) {
+export function RoleSwitcher({ role, onRoleChange, account, balance, connected, onConnect, networkName }: Props) {
   return (
-    <header className="header">
+    <header className="header" role="banner">
       <div className="header-left">
         <h1 className="logo">DevStudio</h1>
         <span className="logo-sub">Smart Contract Workspace</span>
       </div>
       <div className="header-right">
-        <div className="role-buttons">
+        <nav className="role-buttons" aria-label="Role selection">
           {(["studio", "developer", "client"] as Role[]).map((r) => (
             <button
               key={r}
               className={`role-btn ${role === r ? "active" : ""}`}
               style={role === r ? { background: ROLE_COLORS[r] } : undefined}
               onClick={() => onRoleChange(r)}
+              aria-label={`Switch to ${ROLE_LABELS[r]} role`}
+              aria-pressed={role === r}
             >
               {ROLE_LABELS[r]}
             </button>
           ))}
-        </div>
+        </nav>
         {connected ? (
-          <div className="wallet-badge">
+          <div className="wallet-badge" aria-label={`Connected as ${ROLE_LABELS[role]}`}>
             <span className="wallet-dot" style={{ background: ROLE_COLORS[role] }} />
             <div className="wallet-info">
               <span className="wallet-role-label">{ROLE_LABELS[role]}</span>
-              <span className="wallet-addr">{account.slice(0, 6)}...{account.slice(-4)}</span>
+              <span className="wallet-addr"><CopyAddress address={account} /></span>
             </div>
             {balance && <span className="wallet-balance">{balance} ETH</span>}
+            {networkName && <span style={{ fontSize: "9px", color: "var(--text-muted)", marginLeft: 6 }}>{networkName}</span>}
           </div>
         ) : (
           <button className="connect-btn" onClick={onConnect}>

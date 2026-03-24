@@ -12,6 +12,7 @@ export function useContract() {
   const [balance, setBalance] = useState<string>("");
   const [studioAddress, setStudioAddress] = useState<string>("");
   const [connected, setConnected] = useState(false);
+  const [networkName, setNetworkName] = useState("");
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
 
   // Initialize read-only provider
@@ -58,6 +59,11 @@ export function useContract() {
 
       const studioAddr = await c.studio();
       setStudioAddress(studioAddr);
+
+      const net = await rpcProvider.getNetwork();
+      const chainId = Number(net.chainId);
+      const names: Record<number, string> = { 1: "Mainnet", 5: "Goerli", 11155111: "Sepolia", 31337: "Hardhat Local", 10: "Optimism", 42161: "Arbitrum" };
+      setNetworkName(names[chainId] || `Chain ${chainId}`);
     } catch (err) {
       console.error("Connection failed:", err);
     }
@@ -209,6 +215,20 @@ export function useContract() {
     return { totalBudget, clientFunded, paidToDev, remaining };
   }, [readContract, contract]);
 
+  // Discover registered developers from contract events
+  const getRegisteredDevelopers = useCallback(async (): Promise<string[]> => {
+    const c = readContract || contract;
+    if (!c) return [];
+    try {
+      const filter = c.filters.DeveloperRegistered();
+      const events = await c.queryFilter(filter, 0, "latest");
+      const addresses = events.map((e: any) => e.args?.[0] || e.args?.wallet).filter(Boolean);
+      return [...new Set(addresses)] as string[];
+    } catch {
+      return [];
+    }
+  }, [readContract, contract]);
+
   const cancelProject = useCallback(async (projectId: bigint) => {
     if (!contract) throw new Error("Not connected");
     const tx = await contract.cancelProject(projectId);
@@ -223,11 +243,82 @@ export function useContract() {
     addActivity("UnclaimableWithdrawn", `Unclaimable funds withdrawn`, `Project #${projectId}`);
   }, [contract, addActivity]);
 
+  // C1: Pull-based withdrawal
+  const withdrawFunds = useCallback(async () => {
+    if (!contract) throw new Error("Not connected");
+    const tx = await contract.withdraw();
+    await tx.wait();
+    addActivity("Withdrawal", `Funds withdrawn`, account.slice(0, 6) + "...");
+  }, [contract, account, addActivity]);
+
+  const getPendingWithdrawal = useCallback(async (address: string): Promise<bigint> => {
+    const c = readContract || contract;
+    if (!c) return 0n;
+    return c.pendingWithdrawals(address);
+  }, [readContract, contract]);
+
+  // C3: Reassign developer
+  const reassignDeveloper = useCallback(async (projectId: bigint, newDevAddress: string) => {
+    if (!contract) throw new Error("Not connected");
+    const tx = await contract.reassignDeveloper(projectId, newDevAddress);
+    await tx.wait();
+    addActivity("DeveloperReassigned", `Developer reassigned on project #${projectId}`, newDevAddress.slice(0, 6) + "...");
+  }, [contract, addActivity]);
+
+  // C4: Studio top-up budget
+  const topUpBudget = useCallback(async (projectId: bigint, amountWei: bigint) => {
+    if (!contract) throw new Error("Not connected");
+    const tx = await contract.topUpBudget(projectId, { value: amountWei });
+    await tx.wait();
+    addActivity("BudgetIncreased", `Budget increased on project #${projectId}`, `${ethers.formatEther(amountWei)} ETH`);
+  }, [contract, addActivity]);
+
+  // C5: Batch approve milestones
+  const batchApproveMilestones = useCallback(async (projectId: bigint, indices: bigint[]) => {
+    if (!contract) throw new Error("Not connected");
+    const tx = await contract.batchApproveMilestones(projectId, indices);
+    await tx.wait();
+    addActivity("MilestoneApproved", `${indices.length} milestones approved`, `Project #${projectId}`);
+  }, [contract, addActivity]);
+
+  // H2: Edit milestone
+  const editMilestone = useCallback(async (projectId: bigint, index: bigint, title: string, value: bigint) => {
+    if (!contract) throw new Error("Not connected");
+    const tx = await contract.editMilestone(projectId, index, title, value);
+    await tx.wait();
+    addActivity("MilestoneEdited", `Milestone #${index} edited`, `Project #${projectId}`);
+  }, [contract, addActivity]);
+
+  // H2: Remove milestone
+  const removeMilestone = useCallback(async (projectId: bigint, index: bigint) => {
+    if (!contract) throw new Error("Not connected");
+    const tx = await contract.removeMilestone(projectId, index);
+    await tx.wait();
+    addActivity("MilestoneRemoved", `Milestone #${index} removed`, `Project #${projectId}`);
+  }, [contract, addActivity]);
+
+  // H4: Extend deadline
+  const extendDeadline = useCallback(async (projectId: bigint, newDeadline: bigint) => {
+    if (!contract) throw new Error("Not connected");
+    const tx = await contract.extendDeadline(projectId, newDeadline);
+    await tx.wait();
+    addActivity("DeadlineExtended", `Deadline extended on project #${projectId}`, new Date(Number(newDeadline) * 1000).toLocaleDateString());
+  }, [contract, addActivity]);
+
+  // H1: Get weighted rating
+  const getWeightedRating = useCallback(async (wallet: string): Promise<{ weightedAverage: bigint; totalWeight: bigint; count: bigint }> => {
+    const c = readContract || contract;
+    if (!c) throw new Error("Not connected");
+    const [weightedAverage, totalWeight, count] = await c.getWeightedRating(wallet);
+    return { weightedAverage, totalWeight, count };
+  }, [readContract, contract]);
+
   return {
     account,
     balance,
     studioAddress,
     connected,
+    networkName,
     activity,
     connect,
     switchAccount,
@@ -249,5 +340,15 @@ export function useContract() {
     getProjectPayments,
     cancelProject,
     withdrawUnclaimable,
+    getRegisteredDevelopers,
+    withdrawFunds,
+    getPendingWithdrawal,
+    reassignDeveloper,
+    topUpBudget,
+    batchApproveMilestones,
+    editMilestone,
+    removeMilestone,
+    extendDeadline,
+    getWeightedRating,
   };
 }

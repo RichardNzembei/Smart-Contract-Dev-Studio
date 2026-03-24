@@ -43,8 +43,21 @@ export function ProjectCard({ project: p, selected, onClick, showFundingBar, cli
       <p className="project-desc">{p.description}</p>
       <div className="project-meta">
         <span>Budget: {ethers.formatEther(p.budget)} ETH</span>
-        <span>
+        <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
           {Number(p.approvedCount)} / {Number(p.milestoneCount)} milestones
+          {p.milestoneCount > 0n && p.status === ProjectStatus.Active && (
+            <span className="health-dot" title={`${Math.round(Number(p.approvedCount * 100n / p.milestoneCount))}% complete`}
+              style={{
+                width: 8, height: 8, borderRadius: "50%", display: "inline-block",
+                background: p.status === ProjectStatus.Disputed ? "var(--red)" :
+                  Number(p.approvedCount) === 0 ? "var(--yellow)" :
+                  Number(p.approvedCount) === Number(p.milestoneCount) ? "var(--green)" : "var(--blue)",
+              }}
+            />
+          )}
+          {p.status === ProjectStatus.Disputed && (
+            <span style={{ fontSize: 11, color: "var(--red)" }} title="Project is disputed">!</span>
+          )}
         </span>
       </div>
       {p.developer !== ethers.ZeroAddress && (

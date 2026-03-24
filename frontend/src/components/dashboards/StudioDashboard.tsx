@@ -58,6 +58,8 @@ export function StudioDashboard(props: Props) {
   const [showAddMs, setShowAddMs] = useState(false);
   const [msTitle, setMsTitle] = useState("");
   const [msValue, setMsValue] = useState("");
+  const [msDays, setMsDays] = useState("30");
+  const [statusFilter, setStatusFilter] = useState<number | null>(null);
   const [toast, setToast] = useState<{ message: string; type: string } | null>(null);
 
   const showToast = (msg: string, type: string) => {
@@ -96,6 +98,7 @@ export function StudioDashboard(props: Props) {
     }
   };
 
+  const filteredProjects = statusFilter !== null ? projects.filter(p => p.status === statusFilter) : projects;
   const payments = selectedId !== null ? paymentsMap[selectedId.toString()] : null;
   const isActive = project?.status === ProjectStatus.Active;
   const isCompleted = project?.status === ProjectStatus.Completed;
@@ -142,13 +145,20 @@ export function StudioDashboard(props: Props) {
               <h2>All Projects</h2>
               <button className="btn btn-primary btn-sm" onClick={props.onNewProject}>+ New Project</button>
             </div>
+            <div className="filter-bar">
+              <button className={`filter-btn ${statusFilter === null ? "active" : ""}`} onClick={() => setStatusFilter(null)}>All</button>
+              <button className={`filter-btn ${statusFilter === 0 ? "active" : ""}`} onClick={() => setStatusFilter(0)}>Active</button>
+              <button className={`filter-btn ${statusFilter === 1 ? "active" : ""}`} onClick={() => setStatusFilter(1)}>Completed</button>
+              <button className={`filter-btn ${statusFilter === 2 ? "active" : ""}`} onClick={() => setStatusFilter(2)}>Disputed</button>
+              <button className={`filter-btn ${statusFilter === 3 ? "active" : ""}`} onClick={() => setStatusFilter(3)}>Cancelled</button>
+            </div>
             <div className="panel-body" style={{ padding: "8px", display: "flex", flexDirection: "column", gap: "6px" }}>
               {loading ? (
-                <div className="empty-state">Loading...</div>
-              ) : projects.length === 0 ? (
+                <>{[1,2,3].map(i => <div key={i} className="skeleton skeleton-card" />)}</>
+              ) : filteredProjects.length === 0 ? (
                 <div className="empty-state">No projects yet. Create one!</div>
               ) : (
-                projects.map((p) => (
+                filteredProjects.map((p) => (
                   <ProjectCard key={Number(p.id)} project={p} selected={selectedId === p.id} onClick={() => setSelectedId(p.id)} />
                 ))
               )}
@@ -214,11 +224,12 @@ export function StudioDashboard(props: Props) {
                       <div className="add-milestone-form">
                         <input type="text" placeholder="Title" value={msTitle} onChange={e => setMsTitle(e.target.value)} />
                         <input type="text" placeholder="Value (ETH)" value={msValue} onChange={e => setMsValue(e.target.value)} />
-                        <button className="btn btn-primary" disabled={!!actionLoading || !msTitle || !msValue}
+                        <input type="number" placeholder="Days" value={msDays} onChange={e => setMsDays(e.target.value)} min="1" style={{ maxWidth: 80 }} title="Days until deadline" />
+                        <button className="btn btn-primary" disabled={!!actionLoading || !msTitle || !msValue || !msDays}
                           onClick={() => handleAction("addMs", async () => {
-                            const deadline = BigInt(Math.floor(Date.now() / 1000) + 30 * 86400);
+                            const deadline = BigInt(Math.floor(Date.now() / 1000) + parseInt(msDays) * 86400);
                             await props.addMilestone(selectedId, msTitle, ethers.parseEther(msValue), deadline);
-                            setMsTitle(""); setMsValue(""); setShowAddMs(false);
+                            setMsTitle(""); setMsValue(""); setMsDays("30"); setShowAddMs(false);
                           })}>Add</button>
                       </div>
                     )}
@@ -234,11 +245,17 @@ export function StudioDashboard(props: Props) {
                 {isActive && (
                   <div className="action-section dispute-section">
                     {project.approvedCount === 0n && (
-                      <button className="btn btn-outline btn-sm" disabled={!!actionLoading} onClick={() => handleAction("cancel", () => props.cancelProject(selectedId))} style={{ marginRight: 8 }}>
+                      <button className="btn btn-outline btn-sm" disabled={!!actionLoading} onClick={() => {
+                        if (!window.confirm("Cancel this project? The entire budget will be refunded to the studio. This cannot be undone.")) return;
+                        handleAction("cancel", () => props.cancelProject(selectedId));
+                      }} style={{ marginRight: 8 }}>
                         {actionLoading === "cancel" ? "..." : "Cancel Project"}
                       </button>
                     )}
-                    <button className="btn btn-danger btn-sm" disabled={!!actionLoading} onClick={() => handleAction("dispute", () => props.raiseDispute(selectedId))}>
+                    <button className="btn btn-danger btn-sm" disabled={!!actionLoading} onClick={() => {
+                      if (!window.confirm("Raise a dispute on this project? This will freeze all milestone activity until resolved.")) return;
+                      handleAction("dispute", () => props.raiseDispute(selectedId));
+                    }}>
                       {actionLoading === "dispute" ? "..." : "Raise Dispute"}
                     </button>
                   </div>
@@ -249,8 +266,14 @@ export function StudioDashboard(props: Props) {
                   <div className="action-section">
                     <h3>Resolve Dispute</h3>
                     <div className="dispute-resolve-btns">
-                      <button className="btn btn-success" disabled={!!actionLoading} onClick={() => handleAction("resolve", () => props.resolveDispute(selectedId, true))}>Favor Developer</button>
-                      <button className="btn btn-danger" disabled={!!actionLoading} onClick={() => handleAction("resolve2", () => props.resolveDispute(selectedId, false))}>Favor Studio (Refund)</button>
+                      <button className="btn btn-success" disabled={!!actionLoading} onClick={() => {
+                        if (!window.confirm("Resolve in favor of developer? Submitted milestones will be approved and paid.")) return;
+                        handleAction("resolve", () => props.resolveDispute(selectedId, true));
+                      }}>Favor Developer</button>
+                      <button className="btn btn-danger" disabled={!!actionLoading} onClick={() => {
+                        if (!window.confirm("Resolve in favor of studio? Remaining funds will be refunded to the studio.")) return;
+                        handleAction("resolve2", () => props.resolveDispute(selectedId, false));
+                      }}>Favor Studio (Refund)</button>
                     </div>
                   </div>
                 )}

@@ -30,15 +30,22 @@ export function useProjects({
     try {
       setLoading(true);
       const count = await getProjectCount();
-      const list: Project[] = [];
+      const indices = Array.from({ length: Number(count) }, (_, i) => BigInt(i));
+
+      // Load all projects in parallel
+      const list = await Promise.all(indices.map((i) => getProject(i)));
+
+      // Load all payments in parallel
+      const paymentResults = await Promise.allSettled(
+        indices.map((i) => getProjectPayments(i))
+      );
       const payments: Record<string, ProjectPayments> = {};
-      for (let i = 0n; i < count; i++) {
-        const p = await getProject(i);
-        list.push(p);
-        try {
-          payments[i.toString()] = await getProjectPayments(i);
-        } catch { /* ignore */ }
-      }
+      paymentResults.forEach((result, idx) => {
+        if (result.status === "fulfilled") {
+          payments[indices[idx].toString()] = result.value;
+        }
+      });
+
       setAllProjects(list);
       setPaymentsMap(payments);
     } catch (err) {

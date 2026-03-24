@@ -35,11 +35,11 @@ export function NewProjectModal({ onClose, createProject, onCreated }: Props) {
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className="modal-overlay" onClick={onClose} role="dialog" aria-modal="true" aria-label="Create new project">
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h2>New Project</h2>
-          <button className="modal-close" onClick={onClose}>×</button>
+          <button className="modal-close" onClick={onClose} aria-label="Close dialog">×</button>
         </div>
         <form onSubmit={handleSubmit}>
           <div className="form-group">

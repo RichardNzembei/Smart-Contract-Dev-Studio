@@ -25,6 +25,7 @@ function App() {
     account,
     balance,
     connected,
+    networkName,
     activity,
     connect,
     switchAccount,
@@ -46,6 +47,16 @@ function App() {
     getProjectPayments,
     cancelProject,
     withdrawUnclaimable,
+    getRegisteredDevelopers,
+    withdrawFunds,
+    getPendingWithdrawal,
+    reassignDeveloper,
+    topUpBudget,
+    batchApproveMilestones,
+    editMilestone,
+    removeMilestone,
+    extendDeadline,
+    getWeightedRating,
   } = useContract();
 
   const refresh = useCallback(() => {
@@ -57,31 +68,25 @@ function App() {
     connect();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Load known developers once connected
+  // Discover registered developers dynamically from contract events
   useEffect(() => {
     if (!connected) return;
     async function loadDevs() {
-      const knownAddresses = [
-        "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
-        "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
-        "0x90F79bf6EB2c4f870365E785982E1f101E93b906",
-        "0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65",
-        "0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc",
-      ];
+      const addresses = await getRegisteredDevelopers();
       const devs: DevDisplay[] = [];
-      for (const addr of knownAddresses) {
+      for (const addr of addresses) {
         try {
           const dev = await getDeveloper(addr);
           if (dev.registered) {
             const rating = await getDeveloperRating(addr);
             devs.push({ wallet: addr, name: dev.name, avgRating: Number(rating.average), ratingCount: Number(rating.count) });
           }
-        } catch { /* not registered */ }
+        } catch { /* skip */ }
       }
       if (devs.length > 0) setKnownDevs(devs);
     }
     loadDevs();
-  }, [connected]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [connected, getRegisteredDevelopers, getDeveloper, getDeveloperRating]);
 
   // Switch accounts when role changes
   const handleRoleChange = useCallback(
@@ -135,6 +140,7 @@ function App() {
         balance={balance}
         connected={connected}
         onConnect={connect}
+        networkName={networkName}
       />
 
       {role === "studio" && (
@@ -177,6 +183,8 @@ function App() {
           registerDeveloper={handleRegisterDev}
           submitMilestone={submitMilestone}
           raiseDispute={raiseDispute}
+          withdrawFunds={withdrawFunds}
+          getPendingWithdrawal={getPendingWithdrawal}
           onRefresh={refresh}
         />
       )}
@@ -193,6 +201,8 @@ function App() {
           getMilestone={getMilestone}
           fundProject={fundProject}
           raiseDispute={raiseDispute}
+          getDeveloper={getDeveloper}
+          getDeveloperRating={getDeveloperRating}
           onRefresh={refresh}
         />
       )}

@@ -5,7 +5,7 @@ import { ProjectCard } from "../shared/ProjectCard";
 import { PaymentFlowCard } from "../shared/PaymentFlowCard";
 import { MilestoneList } from "../shared/MilestoneList";
 import { ActivityFeed } from "../ActivityFeed";
-import type { Project, Milestone, ProjectPayments, ActivityEvent } from "../../config/types";
+import type { Project, Milestone, Developer, ProjectPayments, ActivityEvent } from "../../config/types";
 import { ProjectStatus } from "../../config/types";
 
 interface Props {
@@ -19,6 +19,8 @@ interface Props {
   getMilestone: (projectId: bigint, index: bigint) => Promise<Milestone>;
   fundProject: (projectId: bigint, amountWei: bigint) => Promise<void>;
   raiseDispute: (projectId: bigint) => Promise<void>;
+  getDeveloper: (wallet: string) => Promise<Developer>;
+  getDeveloperRating: (wallet: string) => Promise<{ average: bigint; count: bigint }>;
   onRefresh: () => void;
 }
 
@@ -37,6 +39,7 @@ export function ClientDashboard(props: Props) {
   const [milestones, setMilestones] = useState<Milestone[]>([]);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [fundAmount, setFundAmount] = useState("");
+  const [devDisplay, setDevDisplay] = useState<{ name: string; rating: number; count: number } | null>(null);
   const [toast, setToast] = useState<{ message: string; type: string } | null>(null);
 
   const showToast = (msg: string, type: string) => {
@@ -58,6 +61,18 @@ export function ClientDashboard(props: Props) {
   }, [selectedId, props]);
 
   useEffect(() => { loadDetail(); }, [loadDetail, props.refreshKey]);
+
+  // Resolve developer name + rating for the selected project
+  useEffect(() => {
+    if (!project || project.developer === ethers.ZeroAddress) { setDevDisplay(null); return; }
+    (async () => {
+      try {
+        const dev = await props.getDeveloper(project.developer);
+        const rating = await props.getDeveloperRating(project.developer);
+        setDevDisplay({ name: dev.name, rating: Number(rating.average), count: Number(rating.count) });
+      } catch { setDevDisplay(null); }
+    })();
+  }, [project]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleAction = async (label: string, fn: () => Promise<void>) => {
     setActionLoading(label);
@@ -111,7 +126,7 @@ export function ClientDashboard(props: Props) {
           <div className="panel">
             <div className="panel-header"><h2>My Funded Projects</h2></div>
             <div className="panel-body" style={{ padding: "8px", display: "flex", flexDirection: "column", gap: "6px" }}>
-              {loading ? <div className="empty-state">Loading...</div> :
+              {loading ? <>{[1,2].map(i => <div key={i} className="skeleton skeleton-card" />)}</> :
                 fundedProjects.length === 0 ? <div className="empty-state">You haven't funded any projects yet</div> :
                 fundedProjects.map(p => (
                   <ProjectCard key={Number(p.id)} project={p} selected={selectedId === p.id} onClick={() => setSelectedId(p.id)}
@@ -145,7 +160,11 @@ export function ClientDashboard(props: Props) {
                 <div className="detail-grid">
                   <div className="detail-item"><label>Total Budget</label><span>{ethers.formatEther(project.budget)} ETH</span></div>
                   <div className="detail-item"><label>Deadline</label><span>{new Date(Number(project.deadline) * 1000).toLocaleDateString()}</span></div>
-                  <div className="detail-item"><label>Developer</label><span>{project.developer === ethers.ZeroAddress ? "Not assigned" : project.developer.slice(0,6)+"..."+project.developer.slice(-4)}</span></div>
+                  <div className="detail-item"><label>Developer</label><span>{project.developer === ethers.ZeroAddress ? "Not assigned" : (
+                    devDisplay ? (
+                      <span>{devDisplay.name} {"★".repeat(devDisplay.rating)}{"☆".repeat(5 - devDisplay.rating)} <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>({devDisplay.count} ratings)</span></span>
+                    ) : project.developer.slice(0,6)+"..."+project.developer.slice(-4)
+                  )}</span></div>
                   <div className="detail-item"><label>Progress</label><span>{Number(project.approvedCount)}/{Number(project.milestoneCount)} milestones done</span></div>
                 </div>
 
@@ -174,10 +193,13 @@ export function ClientDashboard(props: Props) {
                   <MilestoneList milestones={milestones} project={project} role="client" account={props.account} actionLoading={null} />
                 </div>
 
-                {/* Dispute */}
+                {/* Dispute — H5: contract now allows client to raise disputes */}
                 {isActive && project.client.toLowerCase() === props.account.toLowerCase() && (
                   <div className="action-section dispute-section">
-                    <button className="btn btn-danger btn-sm" disabled={!!actionLoading} onClick={() => handleAction("dispute", () => props.raiseDispute(selectedId))}>
+                    <button className="btn btn-danger btn-sm" disabled={!!actionLoading} onClick={() => {
+                      if (!window.confirm("Raise a dispute on this project? This will freeze all milestone activity until the studio resolves it.")) return;
+                      handleAction("dispute", () => props.raiseDispute(selectedId));
+                    }}>
                       {actionLoading === "dispute" ? "..." : "Raise Dispute"}
                     </button>
                   </div>

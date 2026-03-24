@@ -22,6 +22,8 @@ interface Props {
   registerDeveloper: (name: string) => Promise<void>;
   submitMilestone: (projectId: bigint, index: bigint) => Promise<void>;
   raiseDispute: (projectId: bigint) => Promise<void>;
+  withdrawFunds: () => Promise<void>;
+  getPendingWithdrawal: (address: string) => Promise<bigint>;
   onRefresh: () => void;
 }
 
@@ -41,6 +43,7 @@ export function DeveloperDashboard(props: Props) {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [devInfo, setDevInfo] = useState<{ name: string; registered: boolean; avgRating: number; ratingCount: number } | null>(null);
   const [regName, setRegName] = useState("");
+  const [pendingBalance, setPendingBalance] = useState(0n);
   const [toast, setToast] = useState<{ message: string; type: string } | null>(null);
 
   const showToast = (msg: string, type: string) => {
@@ -64,6 +67,11 @@ export function DeveloperDashboard(props: Props) {
       }
     }
     loadProfile();
+  }, [props.account, props.refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load pending withdrawal balance
+  useEffect(() => {
+    props.getPendingWithdrawal(props.account).then(setPendingBalance).catch(() => {});
   }, [props.account, props.refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadDetail = useCallback(async () => {
@@ -150,6 +158,13 @@ export function DeveloperDashboard(props: Props) {
             <div className="stat-card">
               <label>Balance</label>
               <span className="stat-value">{props.balance} ETH</span>
+              {pendingBalance > 0n && (
+                <button className="btn btn-success btn-sm" style={{ marginTop: 6, fontSize: "11px" }}
+                  disabled={!!actionLoading}
+                  onClick={() => handleAction("withdraw", () => props.withdrawFunds())}>
+                  {actionLoading === "withdraw" ? "..." : `Withdraw ${parseFloat(ethers.formatEther(pendingBalance)).toFixed(4)} ETH`}
+                </button>
+              )}
             </div>
           </>
         ) : (
@@ -171,7 +186,7 @@ export function DeveloperDashboard(props: Props) {
           <div className="panel">
             <div className="panel-header"><h2>My Projects</h2></div>
             <div className="panel-body" style={{ padding: "8px", display: "flex", flexDirection: "column", gap: "6px" }}>
-              {loading ? <div className="empty-state">Loading...</div> :
+              {loading ? <>{[1,2].map(i => <div key={i} className="skeleton skeleton-card" />)}</> :
                 myProjects.length === 0 ? <div className="empty-state">No projects assigned to you yet</div> :
                 myProjects.map(p => <ProjectCard key={Number(p.id)} project={p} selected={selectedId === p.id} onClick={() => setSelectedId(p.id)} />)
               }
@@ -215,7 +230,10 @@ export function DeveloperDashboard(props: Props) {
 
                 {isActive && project.developer.toLowerCase() === props.account.toLowerCase() && (
                   <div className="action-section dispute-section">
-                    <button className="btn btn-danger btn-sm" disabled={!!actionLoading} onClick={() => handleAction("dispute", () => props.raiseDispute(selectedId))}>
+                    <button className="btn btn-danger btn-sm" disabled={!!actionLoading} onClick={() => {
+                      if (!window.confirm("Raise a dispute on this project? This will freeze all milestone activity until the studio resolves it.")) return;
+                      handleAction("dispute", () => props.raiseDispute(selectedId));
+                    }}>
                       {actionLoading === "dispute" ? "..." : "Raise Dispute"}
                     </button>
                   </div>
